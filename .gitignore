@@ -1,0 +1,26 @@
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local secrets/config
+.env
+!.env.example
+
+# Local model/audio/runtime artifacts
+models/
+logs/
+*.wav
+*.mp3
+*.m4a
+*.onnx
+*.bin

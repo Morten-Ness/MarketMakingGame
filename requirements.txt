@@ -1,0 +1,8 @@
+python-dotenv>=1.0.1
+google-genai>=1.0.0
+kokoro-onnx>=0.4.0
+sounddevice>=0.5.0
+numpy>=1.26.0
+torch>=2.2.0
+silero-vad>=5.1.0
+faster-whisper>=1.0.0
