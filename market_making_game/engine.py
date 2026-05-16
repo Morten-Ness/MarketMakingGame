@@ -6,7 +6,15 @@ import re
 from dataclasses import dataclass, field
 from typing import Iterable
 
-from .models import ActionResult, ParsedCommand, Quote, Trade, USER_NAME
+from .models import (
+    DEFAULT_BOT_COUNT,
+    ActionResult,
+    ParsedCommand,
+    Quote,
+    Trade,
+    USER_NAME,
+    build_bot_names,
+)
 
 
 DICE_COUNT = 5
@@ -14,12 +22,7 @@ DIE_SIDES = 6
 MIN_TRUE_VALUE = DICE_COUNT
 MAX_TRUE_VALUE = DICE_COUNT * DIE_SIDES
 UNKNOWN_DIE_EV = (DIE_SIDES + 1) / 2
-DEFAULT_TURN_ORDER = ("Bot_Alpha", "Bot_Beta", USER_NAME)
-PRIVATE_DIE_INDEXES = {
-    "Bot_Alpha": 0,
-    "Bot_Beta": 1,
-    USER_NAME: 2,
-}
+DEFAULT_TURN_ORDER = (*build_bot_names(DEFAULT_BOT_COUNT), USER_NAME)
 
 
 def format_price(value: float) -> str:
@@ -81,6 +84,7 @@ class MarketMakingGame:
     rng: random.Random = field(default_factory=random.Random)
     dice: list[int] = field(init=False)
     true_value: int = field(init=False)
+    private_die_indexes: dict[str, int] = field(init=False)
     private_dice: dict[str, int] = field(init=False)
     quotes: dict[str, Quote] = field(default_factory=dict)
     trades: list[Trade] = field(default_factory=list)
@@ -91,11 +95,17 @@ class MarketMakingGame:
     finished: bool = False
 
     def __post_init__(self) -> None:
+        if len(set(self.turn_order)) != len(self.turn_order):
+            raise ValueError("Turn order must not contain duplicate participants.")
+        if USER_NAME not in self.turn_order:
+            raise ValueError(f"Turn order must include {USER_NAME}.")
+
         self.dice = [self.rng.randint(1, DIE_SIDES) for _ in range(DICE_COUNT)]
         self.true_value = sum(self.dice)
+        self.private_die_indexes = self._assign_private_die_indexes()
         self.private_dice = {
             participant: self.dice[index]
-            for participant, index in PRIVATE_DIE_INDEXES.items()
+            for participant, index in self.private_die_indexes.items()
         }
         self.positions = {participant: 0 for participant in self.turn_order}
         self.cash = {participant: 0.0 for participant in self.turn_order}
@@ -103,6 +113,27 @@ class MarketMakingGame:
             f"The exchange rolled {DICE_COUNT} {DIE_SIDES}-sided dice "
             "and distributed private signals."
         )
+        self.history.append(f"Turn order is {' -> '.join(self.turn_order)}.")
+        if self.private_signal_sharing_required():
+            self.history.append(
+                "There are more participants than dice, so at least some private "
+                "signals are shared. The exchange does not reveal who shares with whom."
+            )
+        else:
+            self.history.append("Each participant has a unique private die signal.")
+
+    def _assign_private_die_indexes(self) -> dict[str, int]:
+        shuffled_die_indexes = list(range(DICE_COUNT))
+        self.rng.shuffle(shuffled_die_indexes)
+
+        assignments: dict[str, int] = {}
+        for participant, die_index in zip(self.turn_order, shuffled_die_indexes):
+            assignments[participant] = die_index
+
+        for participant in self.turn_order[len(shuffled_die_indexes) :]:
+            assignments[participant] = self.rng.choice(shuffled_die_indexes)
+
+        return assignments
 
     def current_participant(self) -> str:
         return self.turn_order[self.turn_count % len(self.turn_order)]
@@ -111,10 +142,21 @@ class MarketMakingGame:
         return self.private_dice.get(participant)
 
     def private_die_number_for(self, participant: str) -> int | None:
-        index = PRIVATE_DIE_INDEXES.get(participant)
+        index = self.private_die_indexes.get(participant)
         if index is None:
             return None
         return index + 1
+
+    def turn_position_for(self, participant: str) -> int | None:
+        if participant not in self.turn_order:
+            return None
+        return self.turn_order.index(participant) + 1
+
+    def private_signal_sharing_required(self) -> bool:
+        return len(self.turn_order) > DICE_COUNT
+
+    def private_signal_shared_count(self) -> int:
+        return max(len(self.turn_order) - DICE_COUNT, 0)
 
     def public_state_for(self, participant: str) -> dict[str, object]:
         action_tape = [
@@ -122,12 +164,12 @@ class MarketMakingGame:
             for index, event in enumerate(self.history)
         ]
         participants = list(self.turn_order)
-        private_die_numbers = {
+        turn_positions = {
             name: index + 1
-            for name, index in PRIVATE_DIE_INDEXES.items()
-            if name in participants
+            for index, name in enumerate(participants)
         }
-        assigned_die_indexes = set(PRIVATE_DIE_INDEXES.values())
+        assigned_die_indexes = set(self.private_die_indexes.values())
+        sharing_required = self.private_signal_sharing_required()
         return {
             "participant": participant,
             "turn_index": self.turn_count,
@@ -151,6 +193,8 @@ class MarketMakingGame:
                     name for name in participants if name != participant
                 ],
                 "turn_order": participants,
+                "turn_positions": turn_positions,
+                "your_turn_position": self.turn_position_for(participant),
             },
             "order_book": [quote.as_public_dict() for quote in self.quotes.values()],
             "best_bid": self._best_bid(exclude=participant).as_public_dict()
@@ -173,17 +217,17 @@ class MarketMakingGame:
                 "unconditional_expected_value": DICE_COUNT * UNKNOWN_DIE_EV,
             },
             "information_structure": {
-                "private_die_numbers": private_die_numbers,
                 "your_private_die_number": self.private_die_number_for(participant),
                 "your_private_die_value": self.private_die_for(participant),
-                "hidden_die_numbers": [
-                    index + 1
-                    for index in range(DICE_COUNT)
-                    if index not in assigned_die_indexes
-                ],
+                "hidden_die_count": DICE_COUNT - len(assigned_die_indexes),
+                "private_signal_sharing_required": sharing_required,
+                "minimum_number_of_shared_private_signals": self.private_signal_shared_count(),
                 "rule": (
-                    "Each participant knows only their own private die value. "
-                    "Do not infer or claim hidden die values before showdown."
+                    "Each participant knows only their own private die value. If "
+                    "there are more participants than dice, some participants share "
+                    "the same private die information, but the exchange does not "
+                    "reveal who shares with whom. Do not infer or claim hidden die "
+                    "values or shared-signal identities before showdown."
                 ),
             },
             "private_signal": {
@@ -274,11 +318,8 @@ class MarketMakingGame:
     def reveal(self) -> dict[str, object]:
         return {
             "dice": {
-                "die_1": self.dice[0],
-                "die_2": self.dice[1],
-                "die_3": self.dice[2],
-                "die_4": self.dice[3],
-                "die_5": self.dice[4],
+                f"die_{index}": value
+                for index, value in enumerate(self.dice, start=1)
             },
             "true_value": self.true_value,
             "settlement": self.settlement(),

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import json
+import random
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
-from .audio import build_listener, build_speaker
+from .audio import build_audio_cues, build_listener, build_speaker
 from .bots import BotClient, BotDecision, GeminiBotClient, HeuristicBotClient
 from .config import Settings
 from .engine import (
-    DEFAULT_TURN_ORDER,
     DIE_SIDES,
     DICE_COUNT,
     MAX_TRUE_VALUE,
@@ -17,7 +18,7 @@ from .engine import (
     MarketMakingGame,
     active_bot_names,
 )
-from .models import BOT_PROFILES, USER_NAME
+from .models import USER_NAME, build_bot_names, build_bot_profiles
 
 
 class ScratchpadLogger:
@@ -39,28 +40,58 @@ class ScratchpadLogger:
             handle.write(json.dumps(payload) + "\n")
 
 
+class GameSummaryLogger:
+    def __init__(self, path: str) -> None:
+        self._path = Path(path) if path else None
+
+    def write(self, game: MarketMakingGame) -> None:
+        if not self._path:
+            return
+
+        settlement = game.settlement()
+        payload = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "turns_used": game.turn_count,
+            "bot_count": len(active_bot_names(game.turn_order)),
+            "user_turn_position": game.turn_position_for(USER_NAME),
+            "user_final_pnl": settlement[USER_NAME]["pnl"],
+        }
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        with self._path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload) + "\n")
+
+
 def main() -> int:
     settings = Settings.from_env()
-    game = MarketMakingGame(
-        max_turns=settings.max_turns,
-        end_on_trade=settings.end_on_trade,
-        allow_pass=settings.allow_pass,
-        min_tighten_increment=settings.min_tighten_increment,
-        turn_order=DEFAULT_TURN_ORDER,
-    )
+    try:
+        bot_names = build_bot_names(settings.bot_count)
+        bot_profiles = build_bot_profiles(bot_names)
+        turn_order = _build_turn_order(settings, bot_names)
+        game = MarketMakingGame(
+            max_turns=settings.max_turns,
+            end_on_trade=settings.end_on_trade,
+            allow_pass=settings.allow_pass,
+            min_tighten_increment=settings.min_tighten_increment,
+            turn_order=turn_order,
+        )
+    except ValueError as exc:
+        print(f"Configuration error: {exc}")
+        return 2
     speaker = build_speaker(settings)
-    listener = build_listener(settings)
+    cue_player = build_audio_cues(settings)
+    listener = build_listener(settings, cue_player)
     bot_client = _build_bot_client(settings)
     scratchpad_logger = ScratchpadLogger(settings.scratchpad_log_path)
+    game_summary_logger = GameSummaryLogger(settings.game_summary_log_path)
 
-    _print_intro(game, settings, speaker, listener, bot_client)
+    _print_intro(game, settings, speaker, listener, cue_player, bot_client)
 
     while not game.finished:
         participant = game.current_participant()
         if participant == USER_NAME:
-            command_text = _read_user_action(game, listener)
+            command_text = _read_user_action(game, listener, cue_player)
         else:
-            profile = BOT_PROFILES[participant]
+            profile = bot_profiles[participant]
             private_die = game.private_die_for(participant)
             assert private_die is not None
             try:
@@ -83,7 +114,11 @@ def main() -> int:
             command_text = decision.verbal_action
 
         result = game.apply_action(participant, command_text)
+        if participant == USER_NAME and result.accepted:
+            cue_player.command_accepted()
         if not result.accepted:
+            if participant == USER_NAME:
+                cue_player.command_rejected()
             print(result.message)
             if participant == USER_NAME:
                 continue
@@ -101,7 +136,8 @@ def main() -> int:
         print(f"Book: {game.order_book_line()}")
         print()
 
-    _print_showdown(game)
+    _print_showdown(game, speaker)
+    game_summary_logger.write(game)
     return 0
 
 
@@ -121,17 +157,41 @@ def _build_bot_client(settings: Settings) -> BotClient:
     return HeuristicBotClient()
 
 
+def _build_turn_order(settings: Settings, bot_names: tuple[str, ...]) -> tuple[str, ...]:
+    _validate_bot_count(settings.bot_count)
+    participants = [*bot_names, USER_NAME]
+    if settings.randomize_turn_order:
+        random.shuffle(participants)
+    return tuple(participants)
+
+
+def _validate_bot_count(bot_count: int) -> None:
+    if bot_count < 1:
+        raise ValueError("BOT_COUNT must be at least 1.")
+
+
 def _print_intro(
     game: MarketMakingGame,
     settings: Settings,
     speaker,
     listener,
+    cue_player,
     bot_client: BotClient,
 ) -> None:
     active_bots = ", ".join(active_bot_names(game.turn_order))
     print("Quant Market-Making 5-Dice Simulator")
     print(f"Active bots: {active_bots}")
+    print(f"Bot count: {settings.bot_count}; participants: {len(game.turn_order)}")
+    print(
+        f"Private signal sharing required: {game.private_signal_sharing_required()}"
+    )
     print(f"Turns: {settings.max_turns}; end on first trade: {settings.end_on_trade}")
+    print(f"Turn order randomized: {settings.randomize_turn_order}")
+    print(f"Turn order: {' -> '.join(game.turn_order)}")
+    print(
+        f"Your turn position: {game.turn_position_for(USER_NAME)} "
+        f"of {len(game.turn_order)}"
+    )
     print(
         f"Pass allowed: {settings.allow_pass}; "
         f"minimum tightening: {settings.min_tighten_increment:g}"
@@ -149,15 +209,20 @@ def _print_intro(
     print(bot_client.status)
     print(speaker.status)
     print(listener.status)
+    print(cue_player.status)
     print()
     speaker.speak("Exchange", _spoken_intro(game))
 
 
-def _read_user_action(game: MarketMakingGame, listener) -> str:
+def _read_user_action(game: MarketMakingGame, listener, cue_player) -> str:
     while True:
         print("[YOUR TURN]")
         print(f"Book: {game.order_book_line()}")
-        print(f"Your Die #3: {game.private_die_for(USER_NAME)}")
+        print(
+            f"Your Die #{game.private_die_number_for(USER_NAME)}: "
+            f"{game.private_die_for(USER_NAME)}"
+        )
+        cue_player.user_turn_started()
         command_text = listener.listen()
         if command_text:
             return command_text
@@ -180,12 +245,22 @@ def _spoken_intro(game: MarketMakingGame) -> str:
             "on at least one side."
         )
     )
-    private_die_number = game.private_die_number_for(USER_NAME)
     private_die_value = game.private_die_for(USER_NAME)
-    private_die_label = (
-        f"die number {_speakable_number(private_die_number)}"
-        if private_die_number is not None
-        else "your private die"
+    user_turn_position = game.turn_position_for(USER_NAME)
+    bot_count = len(active_bot_names(game.turn_order))
+    opponent_word = "opponent" if bot_count == 1 else "opponents"
+    participant_word = "participant" if len(game.turn_order) == 1 else "participants"
+    bot_count_phrase = (
+        f"There is {_speakable_number(bot_count)} bot {opponent_word}"
+        if bot_count == 1
+        else f"There are {_speakable_number(bot_count)} bot {opponent_word}"
+    )
+    sharing_rule = (
+        "There are more participants than dice, so at least some participants "
+        "share the same private die information. You will not be told who shares "
+        "with whom."
+        if game.private_signal_sharing_required()
+        else "Each participant has a unique private die signal."
     )
 
     return (
@@ -193,11 +268,51 @@ def _spoken_intro(game: MarketMakingGame) -> str:
         f"This game has {_speakable_number(game.max_turns)} {turn_word}. "
         f"{end_condition} "
         f"{pass_rule} "
+        f"{bot_count_phrase} and "
+        f"{_speakable_number(len(game.turn_order))} total {participant_word}. "
+        f"{sharing_rule} "
+        f"You are {_ordinal_phrase(user_turn_position)} in the turn order, "
+        f"out of {_speakable_number(len(game.turn_order))} {participant_word}. "
+        f"The turn order is {_spoken_turn_order(game.turn_order)}. "
         "The underlying is the sum of "
         f"{_dice_phrase(DICE_COUNT, DIE_SIDES)}. "
-        f"Your private information is {private_die_label}, "
-        f"which is {_speakable_number(private_die_value)}."
+        f"Your private die value is {_speakable_number(private_die_value)}."
     )
+
+
+def _spoken_turn_order(turn_order: tuple[str, ...]) -> str:
+    names = [_participant_spoken_name(name) for name in turn_order]
+    if not names:
+        return "unknown"
+    if len(names) == 1:
+        return names[0]
+    return f"{', '.join(names[:-1])}, then {names[-1]}"
+
+
+def _participant_spoken_name(name: str) -> str:
+    if name == USER_NAME:
+        return "you"
+    return name.replace("_", " ")
+
+
+def _ordinal_phrase(value: int | None) -> str:
+    words = {
+        1: "first",
+        2: "second",
+        3: "third",
+        4: "fourth",
+        5: "fifth",
+        6: "sixth",
+        7: "seventh",
+        8: "eighth",
+        9: "ninth",
+        10: "tenth",
+        11: "eleventh",
+        12: "twelfth",
+    }
+    if value is None:
+        return "unknown"
+    return words.get(value, str(value))
 
 
 def _fallback_bot_command(game: MarketMakingGame, participant: str, profile) -> str:
@@ -268,15 +383,11 @@ def _speakable_number(value: int | None) -> str:
     return words.get(value, str(value))
 
 
-def _print_showdown(game: MarketMakingGame) -> None:
+def _print_showdown(game: MarketMakingGame, speaker) -> None:
     reveal = game.reveal()
     dice = reveal["dice"]
     print("SHOWDOWN")
-    print(
-        "Dice: "
-        f"{dice['die_1']}, {dice['die_2']}, {dice['die_3']}, "
-        f"{dice['die_4']}, {dice['die_5']}"
-    )
+    print(f"Dice: {', '.join(str(value) for value in dice.values())}")
     print(f"True value: {reveal['true_value']}")
     print("PnL:")
     for participant, row in reveal["settlement"].items():
@@ -284,3 +395,13 @@ def _print_showdown(game: MarketMakingGame) -> None:
             f"  {participant}: position {row['position']}, "
             f"cash {row['cash']}, pnl {row['pnl']}"
         )
+
+    user_row = reveal["settlement"][USER_NAME]
+    speaker.speak(
+        "Exchange",
+        (
+            "Game over. "
+            f"The true value is {reveal['true_value']}. "
+            f"Your final P and L is {format_spoken_price(float(user_row['pnl']))}."
+        ),
+    )

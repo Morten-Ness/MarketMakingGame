@@ -248,6 +248,9 @@ Authoritative trading rules:
 
 You know your own private die value from private_signal. You do not know anyone
 else's die value or any hidden die values.
+If private_signal_sharing_required is true, at least some participants share
+the same private die information, but you are not told who shares with whom or
+whether your own signal is shared.
 Use the public order book, full chronological action_tape, and trade history,
 but do not claim to know hidden dice.
 

@@ -11,17 +11,25 @@ Local interview-practice simulator for making markets on the sum of five six-sid
 The app reads local settings from `.env`.
 
 At startup, the exchange speaks the game setup over text-to-speech: turn count,
-first-trade ending rule, pass/tightening rule, underlying, and your private die.
-The spoken setup does not include the range or expected value.
+first-trade ending rule, pass/tightening rule, your turn-order position, the full
+turn order, whether private signals must be shared, underlying, and your private
+die. The spoken setup does not include the range or expected value.
 
 Useful game parameters in `.env`:
 
 ```env
 MAX_TURNS=9
 END_ON_TRADE=false
+BOT_COUNT=2
+RANDOMIZE_TURN_ORDER=true
 ALLOW_PASS=true
 MIN_TIGHTEN_INCREMENT=0.5
 ```
+
+`BOT_COUNT` is the number of bot opponents. If total participants exceed the
+number of dice, every die is assigned to at least one participant and the extra
+participants randomly share an existing die signal. The exchange announces that
+sharing is required, but does not reveal who shares with whom.
 
 If `ALLOW_PASS=false`, participants cannot pass. They must hit, lift, or make a
 market that tightens the current best market by at least `MIN_TIGHTEN_INCREMENT`
@@ -32,9 +40,9 @@ on at least one side.
 Before every AI turn, the exchange sends the bot:
 
 - its private die
-- game configuration: turn count, current turn, ending rule, participants, participant count, and turn order
+- game configuration: turn count, current turn, ending rule, participants, participant count, turn order, and the bot's own turn-order position
 - underlying configuration: dice count, die sides, range, and unconditional expected value
-- information structure: which die number each participant privately observes, which dice are hidden, and the bot's own private die value
+- information structure: the bot's own private die value, whether private-signal sharing is required, and how many dice remain unobserved
 - trading rules: whether passing is allowed and the minimum tightening increment
 - the current public order book
 - the current best bid and offer
@@ -187,10 +195,18 @@ Useful `.env` settings:
 
 ```env
 ENABLE_VOICE_INPUT=true
+ENABLE_AUDIO_CUES=true
+AUDIO_CUE_VOLUME=0.2
 WHISPER_MODEL=tiny.en
 VAD_SILENCE_MS=500
 VOICE_MAX_SECONDS=30
 ```
+
+Audio cues are short tones:
+
+- your turn started
+- your command was accepted by the engine
+- your command was rejected or could not be parsed
 
 If recording stops too quickly after a pause, increase:
 
@@ -217,3 +233,13 @@ or:
 ```text
 Bot brain: local heuristic fallback (programmatic).
 ```
+
+## Logs
+
+Game summaries append to:
+
+```text
+logs/game_summaries.jsonl
+```
+
+Each row includes `turns_used`, `bot_count`, and `user_final_pnl`.
