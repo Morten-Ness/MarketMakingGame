@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 import random
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
 
-from .audio import build_audio_cues, build_listener, build_speaker
+from shared.audio import build_audio_cues, build_listener, build_speaker
+from shared.logging import JsonlLogger
+
 from .bots import BotClient, BotDecision, GeminiBotClient, HeuristicBotClient
 from .config import Settings
 from .engine import (
@@ -23,42 +23,34 @@ from .models import USER_NAME, build_bot_names, build_bot_profiles
 
 class ScratchpadLogger:
     def __init__(self, path: str) -> None:
-        self._path = Path(path) if path else None
+        self._logger = JsonlLogger(path)
 
     def write(self, participant: str, decision: BotDecision, turn_index: int) -> None:
-        if not self._path:
-            return
-
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "turn_index": turn_index,
-            "participant": participant,
-            "scratchpad": decision.scratchpad,
-            "verbal_action": decision.verbal_action,
-        }
-        with self._path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload) + "\n")
+        self._logger.write(
+            {
+                "turn_index": turn_index,
+                "participant": participant,
+                "scratchpad": decision.scratchpad,
+                "verbal_action": decision.verbal_action,
+            }
+        )
 
 
 class GameSummaryLogger:
     def __init__(self, path: str) -> None:
-        self._path = Path(path) if path else None
+        self._logger = JsonlLogger(path)
 
     def write(self, game: MarketMakingGame) -> None:
-        if not self._path:
-            return
-
         settlement = game.settlement()
-        payload = {
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "turns_used": game.turn_count,
-            "bot_count": len(active_bot_names(game.turn_order)),
-            "user_turn_position": game.turn_position_for(USER_NAME),
-            "user_final_pnl": settlement[USER_NAME]["pnl"],
-        }
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload) + "\n")
+        self._logger.write(
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "turns_used": game.turn_count,
+                "bot_count": len(active_bot_names(game.turn_order)),
+                "user_turn_position": game.turn_position_for(USER_NAME),
+                "user_final_pnl": settlement[USER_NAME]["pnl"],
+            }
+        )
 
 
 def main() -> int:
@@ -210,6 +202,8 @@ def _print_intro(
     print(speaker.status)
     print(listener.status)
     print(cue_player.status)
+    print(f"Scratchpad log: {settings.scratchpad_log_path}")
+    print(f"Game summary log: {settings.game_summary_log_path}")
     print()
     speaker.speak("Exchange", _spoken_intro(game))
 

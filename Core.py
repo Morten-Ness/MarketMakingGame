@@ -1,4 +1,4 @@
-from market_making_game.cli import main
+from games.dice_sum_market.cli import main
 
 
 if __name__ == "__main__":

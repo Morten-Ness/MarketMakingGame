@@ -19,6 +19,7 @@ env/
 # Local model/audio/runtime artifacts
 models/
 logs/
+games/*/logs/
 *.wav
 *.mp3
 *.m4a

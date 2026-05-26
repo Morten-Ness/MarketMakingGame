@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from typing import Protocol
 
-from .engine import UNKNOWN_DIE_EV, format_price
+from shared.llm import GeminiClient
+
+from .engine import format_price
 from .models import BotProfile
 
 
@@ -160,22 +161,15 @@ class HeuristicBotClient:
 
 class GeminiBotClient:
     def __init__(self, api_key: str, model: str, temperature: float = 0.35) -> None:
-        try:
-            from google import genai
-            from google.genai import types
-        except ImportError as exc:
-            raise RuntimeError(
-                "google-genai is not installed. Install requirements.txt or disable Gemini."
-            ) from exc
-
-        self._types = types
-        self._client = genai.Client(api_key=api_key)
-        self._model = model
-        self._temperature = temperature
+        self._client = GeminiClient(
+            api_key=api_key,
+            model=model,
+            temperature=temperature,
+        )
 
     @property
     def status(self) -> str:
-        return f"Bot brain: Gemini API ({self._model}, temperature={self._temperature})."
+        return f"Bot brain: {self._client.status}."
 
     def decide(
         self,
@@ -195,16 +189,9 @@ class GeminiBotClient:
             ),
         }
 
-        response = self._client.models.generate_content(
-            model=self._model,
-            contents=json.dumps(user_prompt, indent=2),
-            config=self._types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                response_mime_type="application/json",
-                temperature=self._temperature,
-            ),
+        return _parse_decision_payload(
+            self._client.generate_json(system_instruction, user_prompt)
         )
-        return _parse_decision(response.text or "")
 
 
 def _system_instruction(
@@ -354,17 +341,9 @@ def _asset_range(asset: object, dice_count: int, die_sides: int) -> tuple[int, i
     return dice_count, dice_count * die_sides
 
 
-def _parse_decision(text: str) -> BotDecision:
-    cleaned = text.strip()
-    fence_match = re.search(r"```(?:json)?\s*(.*?)```", cleaned, flags=re.S)
-    if fence_match:
-        cleaned = fence_match.group(1).strip()
-
-    try:
-        payload = json.loads(cleaned)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Gemini returned invalid JSON: {text!r}") from exc
-
+def _parse_decision_payload(payload: object) -> BotDecision:
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Gemini returned non-object JSON: {payload!r}")
     scratchpad = str(payload.get("scratchpad", "")).strip()
     verbal_action = str(payload.get("verbal_action", "")).strip()
     if not verbal_action:

@@ -6,9 +6,27 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from typing import Protocol
 
-from .config import Settings
-from .models import BotProfile
+from .paths import resolve_repo_path
+
+
+class SpeechProfile(Protocol):
+    voice: str
+
+
+class AudioSettings(Protocol):
+    enable_tts: bool
+    tts_backend: str
+    macos_say_voice: str
+    enable_voice_input: bool
+    enable_audio_cues: bool
+    audio_cue_volume: float
+    kokoro_model_path: str
+    kokoro_voices_path: str
+    whisper_model: str
+    vad_silence_ms: int
+    voice_max_seconds: int
 
 
 class AudioCuePlayer:
@@ -83,7 +101,12 @@ class AudioCuePlayer:
 class ConsoleSpeaker:
     status = "TTS: disabled; console text only."
 
-    def speak(self, participant: str, text: str, profile: BotProfile | None = None) -> None:
+    def speak(
+        self,
+        participant: str,
+        text: str,
+        profile: SpeechProfile | None = None,
+    ) -> None:
         print(f"{participant}: {text}")
 
 
@@ -93,6 +116,7 @@ class KokoroSpeaker(ConsoleSpeaker):
         self._sounddevice = None
         self._load_error: str | None = None
         model_path = _resolve_kokoro_model_path(model_path)
+        voices_path = str(resolve_repo_path(voices_path))
 
         try:
             from kokoro_onnx import Kokoro
@@ -125,7 +149,12 @@ class KokoroSpeaker(ConsoleSpeaker):
             return f"TTS: kokoro-onnx unavailable; {self._load_error}"
         return "TTS: kokoro-onnx unavailable."
 
-    def speak(self, participant: str, text: str, profile: BotProfile | None = None) -> None:
+    def speak(
+        self,
+        participant: str,
+        text: str,
+        profile: SpeechProfile | None = None,
+    ) -> None:
         super().speak(participant, text, profile)
         if not self._kokoro or not self._sounddevice:
             if self._load_error:
@@ -158,7 +187,12 @@ class MacOSSaySpeaker(ConsoleSpeaker):
             return f"TTS: enabled with macOS say fallback voice '{self._voice}'."
         return "TTS: enabled with macOS say fallback."
 
-    def speak(self, participant: str, text: str, profile: BotProfile | None = None) -> None:
+    def speak(
+        self,
+        participant: str,
+        text: str,
+        profile: SpeechProfile | None = None,
+    ) -> None:
         super().speak(participant, text, profile)
         try:
             command = ["say"]
@@ -285,7 +319,7 @@ class WhisperVadListener(ConsoleListener):
         return self._np.concatenate(chunks).astype("float32"), stop_reason
 
 
-def build_speaker(settings: Settings) -> ConsoleSpeaker:
+def build_speaker(settings: AudioSettings) -> ConsoleSpeaker:
     if not settings.enable_tts:
         return ConsoleSpeaker()
 
@@ -303,16 +337,16 @@ def build_speaker(settings: Settings) -> ConsoleSpeaker:
 
 
 def _resolve_kokoro_model_path(model_path: str) -> str:
-    configured_path = Path(model_path)
+    configured_path = resolve_repo_path(model_path)
     if configured_path.exists():
-        return model_path
+        return str(configured_path)
 
     if configured_path.name == "kokoro-v1.0.onnx":
         int8_path = configured_path.with_name("kokoro-v1.0.int8.onnx")
         if int8_path.exists():
             return str(int8_path)
 
-    return model_path
+    return str(configured_path)
 
 
 def prepare_tts_text(text: str) -> str:
@@ -329,14 +363,14 @@ def _decimal_to_spoken_text(match: re.Match[str]) -> str:
     return f"{integer_part} point {decimal_part}"
 
 
-def build_audio_cues(settings: Settings) -> AudioCuePlayer:
+def build_audio_cues(settings: AudioSettings) -> AudioCuePlayer:
     return AudioCuePlayer(
         enabled=settings.enable_audio_cues,
         volume=settings.audio_cue_volume,
     )
 
 
-def build_listener(settings: Settings, cue_player: AudioCuePlayer) -> ConsoleListener:
+def build_listener(settings: AudioSettings, cue_player: AudioCuePlayer) -> ConsoleListener:
     if settings.enable_voice_input:
         return WhisperVadListener(
             settings.whisper_model,

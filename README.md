@@ -8,6 +8,18 @@ Local interview-practice simulator for making markets on the sum of five six-sid
 ./.venv/bin/python Core.py
 ```
 
+You can also run the dice-sum game directly from its game folder:
+
+```bash
+./.venv/bin/python games/dice_sum_market/run.py
+```
+
+If dependencies are missing in a fresh environment, install them with:
+
+```bash
+pip install -r requirements.txt
+```
+
 The app reads local settings from `.env`.
 
 At startup, the exchange speaks the game setup over text-to-speech: turn count,
@@ -236,10 +248,14 @@ Bot brain: local heuristic fallback (programmatic).
 
 ## Logs
 
-Game summaries append to:
+Each game keeps its logs inside its own game folder. For the dice-sum game,
+scratchpads and summaries append to:
 
 ```text
-logs/game_summaries.jsonl
+games/dice_sum_market/logs/scratchpads.jsonl
+games/dice_sum_market/logs/game_summaries.jsonl
 ```
 
-Each row includes `turns_used`, `bot_count`, and `user_final_pnl`.
+Summary rows include `turns_used`, `bot_count`, and `user_final_pnl`. Set
+`SCRATCHPAD_LOG_PATH` or `GAME_SUMMARY_LOG_PATH` in `.env` if you want a custom
+location.
