@@ -17,7 +17,7 @@ from .engine import (
     active_bot_names,
     format_probability,
 )
-from .models import MarketSnapshot, USER_NAME, build_bot_names, build_bot_profiles
+from .models import BotProfile, MarketSnapshot, USER_NAME, build_bot_names, build_bot_profiles
 
 
 class ScratchpadLogger:
@@ -76,34 +76,72 @@ class GameSummaryLogger:
 
 def main() -> int:
     settings = Settings.from_env()
-    try:
-        market = MarketRepository(settings).select_market()
-        bot_names = build_bot_names(settings.bot_count)
-        bot_profiles = build_bot_profiles(bot_names)
-        turn_order = _build_turn_order(settings, bot_names)
-        game = PredictionMarketGame(
-            market=market,
-            max_turns=settings.max_turns,
-            end_on_trade=settings.end_on_trade,
-            allow_pass=settings.allow_pass,
-            min_tighten_increment=settings.min_tighten_increment,
-            turn_order=turn_order,
-        )
-    except (MarketSelectionError, ValueError) as exc:
-        print(f"Configuration error: {exc}")
-        return 2
-
     speaker = build_speaker(settings)
     cue_player = build_audio_cues(settings)
     listener = build_listener(settings, cue_player)
     bot_client = _build_bot_client(settings)
+    market_repository = MarketRepository(settings)
     scratchpad_logger = ScratchpadLogger(settings.scratchpad_log_path)
     played_market_logger = PlayedMarketLogger(settings.played_markets_log_path)
     game_summary_logger = GameSummaryLogger(settings.game_summary_log_path)
-    played_market_logger.write(market)
 
-    _print_intro(game, settings, speaker, listener, cue_player, bot_client)
+    while True:
+        try:
+            game, bot_profiles = _build_game(settings, market_repository)
+        except (MarketSelectionError, ValueError) as exc:
+            print(f"Configuration error: {exc}")
+            return 2
 
+        played_market_logger.write(game.market)
+        _print_intro(game, settings, speaker, listener, cue_player, bot_client)
+        _run_game(
+            game=game,
+            bot_profiles=bot_profiles,
+            bot_client=bot_client,
+            scratchpad_logger=scratchpad_logger,
+            listener=listener,
+            cue_player=cue_player,
+            speaker=speaker,
+        )
+        game_summary_logger.write(game)
+
+        if not settings.auto_next_game:
+            return 0
+
+        print()
+        print("Auto-next game is enabled; starting a new market.")
+        print()
+
+
+def _build_game(
+    settings: Settings,
+    market_repository: MarketRepository,
+) -> tuple[PredictionMarketGame, dict[str, BotProfile]]:
+    market = market_repository.select_market()
+    bot_names = build_bot_names(settings.bot_count)
+    bot_profiles = build_bot_profiles(bot_names)
+    turn_order = _build_turn_order(settings, bot_names)
+    game = PredictionMarketGame(
+        market=market,
+        max_turns=settings.max_turns,
+        end_on_trade=settings.end_on_trade,
+        allow_pass=settings.allow_pass,
+        min_tighten_increment=settings.min_tighten_increment,
+        turn_order=turn_order,
+    )
+    return game, bot_profiles
+
+
+def _run_game(
+    *,
+    game: PredictionMarketGame,
+    bot_profiles,
+    bot_client: BotClient,
+    scratchpad_logger: ScratchpadLogger,
+    listener,
+    cue_player,
+    speaker,
+) -> None:
     while not game.finished:
         participant = game.current_participant()
         if participant == USER_NAME:
@@ -123,7 +161,7 @@ def main() -> int:
                     profile=profile,
                     public_state=game.public_state_for(participant),
                 )
-            scratchpad_logger.write(market, participant, decision, game.turn_count)
+            scratchpad_logger.write(game.market, participant, decision, game.turn_count)
             speaker.speak(participant, decision.verbal_action, profile)
             command_text = decision.verbal_action
 
@@ -151,8 +189,6 @@ def main() -> int:
         print()
 
     _print_showdown(game, speaker)
-    game_summary_logger.write(game)
-    return 0
 
 
 def _build_bot_client(settings: Settings) -> BotClient:
@@ -196,6 +232,7 @@ def _print_intro(
     print("Prediction-Market Odds Market-Making Simulator")
     print(f"Active bots: {active_bots}")
     print(f"Bot count: {settings.bot_count}; participants: {len(game.turn_order)}")
+    print(f"Auto-next game: {settings.auto_next_game}")
     print(f"Turns: {settings.max_turns}; end on first trade: {settings.end_on_trade}")
     print(f"Turn order randomized: {settings.randomize_turn_order}")
     print(f"Turn order: {' -> '.join(game.turn_order)}")

@@ -32,6 +32,7 @@ class Settings:
     voice_max_seconds: int
     max_turns: int
     end_on_trade: bool
+    auto_next_game: bool
     bot_count: int
     randomize_turn_order: bool
     allow_pass: bool
@@ -72,6 +73,7 @@ class Settings:
             voice_max_seconds=env_int("VOICE_MAX_SECONDS", 30),
             max_turns=env_int("PREDICTION_MARKET_MAX_TURNS", 8),
             end_on_trade=env_bool("PREDICTION_MARKET_END_ON_TRADE", False),
+            auto_next_game=env_bool("PREDICTION_MARKET_AUTO_NEXT_GAME", False),
             bot_count=env_int("PREDICTION_MARKET_BOT_COUNT", 3),
             randomize_turn_order=env_bool("PREDICTION_MARKET_RANDOMIZE_TURN_ORDER", True),
             allow_pass=env_bool("PREDICTION_MARKET_ALLOW_PASS", False),

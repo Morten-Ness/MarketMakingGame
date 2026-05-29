@@ -61,6 +61,7 @@ Useful prediction-market settings in `.env`:
 
 ```env
 PREDICTION_MARKET_MAX_TURNS=8
+PREDICTION_MARKET_AUTO_NEXT_GAME=true
 PREDICTION_MARKET_BOT_COUNT=3
 PREDICTION_MARKET_ALLOW_PASS=false
 PREDICTION_MARKET_MIN_TIGHTEN_INCREMENT=1
@@ -81,6 +82,10 @@ lift the 35 offer
 
 Bots are instructed to reason only from the market text and public action tape,
 not to look up outside research or claim knowledge of the live odds.
+
+Set `PREDICTION_MARKET_AUTO_NEXT_GAME=true` to keep the process alive and start
+the next market automatically after showdown, reusing the already-loaded audio,
+voice, and bot clients.
 
 ## Dice-Sum Game
 
