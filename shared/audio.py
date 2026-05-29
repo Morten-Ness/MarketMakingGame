@@ -285,6 +285,7 @@ class WhisperVadListener(ConsoleListener):
             print("[heard nothing; type the command]")
             return super().listen()
 
+        text = normalize_transcribed_numbers(text)
         print(f"[heard] {text}")
         return text
 
@@ -354,6 +355,28 @@ def prepare_tts_text(text: str) -> str:
         r"(?<![\w.])(\d+)\.(\d+)(?!\w|\.\d)",
         _decimal_to_spoken_text,
         text,
+    )
+
+
+def normalize_transcribed_numbers(text: str) -> str:
+    digit_words = {
+        "zero": "0",
+        "one": "1",
+        "two": "2",
+        "three": "3",
+        "four": "4",
+        "five": "5",
+        "six": "6",
+        "seven": "7",
+        "eight": "8",
+        "nine": "9",
+    }
+    pattern = r"\b(" + "|".join(digit_words) + r")\b"
+    return re.sub(
+        pattern,
+        lambda match: digit_words[match.group(1).lower()],
+        text,
+        flags=re.IGNORECASE,
     )
 
 

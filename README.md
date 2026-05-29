@@ -1,17 +1,25 @@
-# Quant Market-Making 5-Dice Simulator
+# Market-Making Game Simulators
 
-Local interview-practice simulator for making markets on the sum of five six-sided dice.
+Local interview-practice simulators for making markets against hidden values.
 
 ## Running
+
+Run the dice-sum game:
 
 ```bash
 ./.venv/bin/python Core.py
 ```
 
-You can also run the dice-sum game directly from its game folder:
+or directly from its game folder:
 
 ```bash
 ./.venv/bin/python games/dice_sum_market/run.py
+```
+
+Run the prediction-market odds game:
+
+```bash
+./.venv/bin/python games/prediction_market_odds/run.py
 ```
 
 If dependencies are missing in a fresh environment, install them with:
@@ -20,7 +28,61 @@ If dependencies are missing in a fresh environment, install them with:
 pip install -r requirements.txt
 ```
 
-The app reads local settings from `.env`.
+The apps read local settings from `.env`.
+
+## Prediction-Market Odds Game
+
+This game fetches live active Polymarket markets from the public Gamma API,
+filters to AI, geopolitics, tech, finance, and science tags, sorts by highest
+one-month traded volume within each category, randomly selects a category, then
+uses the highest-volume unplayed binary Yes/No market available in that category.
+If that category is exhausted, it falls back through the other categories. The
+current implied Yes probability is hidden until showdown. You and the bots make
+probability markets from `0%` to `100%`; quotes must use one-percentage-point
+increments by default. Trade prices and the final hidden probability are
+converted to natural log odds for PnL, so a buyer's payoff is
+`100 * (logit(hidden_probability) - logit(trade_price))`.
+
+The game stores fetched market snapshots in:
+
+```text
+games/prediction_market_odds/data/market_cache.json
+```
+
+It also logs selected market IDs so the same market, or another market from the
+same event, is avoided in future games:
+
+```text
+games/prediction_market_odds/logs/played_markets.jsonl
+games/prediction_market_odds/logs/game_summaries.jsonl
+```
+
+Useful prediction-market settings in `.env`:
+
+```env
+PREDICTION_MARKET_MAX_TURNS=8
+PREDICTION_MARKET_BOT_COUNT=3
+PREDICTION_MARKET_ALLOW_PASS=false
+PREDICTION_MARKET_MIN_TIGHTEN_INCREMENT=1
+POLYMARKET_MARKET_FETCH_LIMIT=100
+POLYMARKET_MARKET_FETCH_PAGES=3
+POLYMARKET_MARKET_MAX_OFFSET=500
+POLYMARKET_ALLOWED_CATEGORIES=AI,Geopolitics,Tech,Finance,Science
+```
+
+Good commands:
+
+```text
+20 at 35
+20% at 35%
+hit the 20 bid
+lift the 35 offer
+```
+
+Bots are instructed to reason only from the market text and public action tape,
+not to look up outside research or claim knowledge of the live odds.
+
+## Dice-Sum Game
 
 At startup, the exchange speaks the game setup over text-to-speech: turn count,
 first-trade ending rule, pass/tightening rule, your turn-order position, the full
@@ -256,6 +318,13 @@ games/dice_sum_market/logs/scratchpads.jsonl
 games/dice_sum_market/logs/game_summaries.jsonl
 ```
 
-Summary rows include `turns_used`, `bot_count`, and `user_final_pnl`. Set
-`SCRATCHPAD_LOG_PATH` or `GAME_SUMMARY_LOG_PATH` in `.env` if you want a custom
-location.
+For the prediction-market odds game:
+
+```text
+games/prediction_market_odds/logs/scratchpads.jsonl
+games/prediction_market_odds/logs/played_markets.jsonl
+games/prediction_market_odds/logs/game_summaries.jsonl
+```
+
+Summary rows include `turns_used`, `bot_count`, and `user_final_pnl`. Set the
+game-specific log path variables in `.env` if you want a custom location.

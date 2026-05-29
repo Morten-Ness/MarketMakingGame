@@ -20,6 +20,7 @@ env/
 models/
 logs/
 games/*/logs/
+games/*/data/
 *.wav
 *.mp3
 *.m4a
