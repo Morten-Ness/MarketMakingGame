@@ -12,8 +12,22 @@ from games.research_papers.config import (
     RECOMMENDATION_FIELDS,
     Settings,
 )
-from games.research_papers.corpus import CorpusGrower, CorpusStore, first_untracked_paper
+from games.research_papers.corpus import (
+    CorpusGrower,
+    CorpusStore,
+    first_untracked_paper,
+    recommendation_limits,
+)
 from games.research_papers.models import Corpus, Paper
+from games.research_papers.pdfs import (
+    PdfCandidate,
+    arxiv_pdf_url,
+    is_pdf_response,
+    pdf_candidates_for_paper,
+    sanitize_filename,
+    unique_pdf_path,
+)
+from games.research_papers.raw_text import RawTextExtractor, raw_text_path_for_pdf
 
 
 def _paper(
@@ -21,13 +35,47 @@ def _paper(
     title: str,
     *,
     corpus_id: int | None = None,
+    arxiv_id: str | None = None,
+    open_access_pdf_url: str | None = None,
+    with_pdf: bool = False,
 ) -> Paper:
-    return Paper(
+    paper = Paper(
         paper_id=paper_id,
         title=title,
         corpus_id=corpus_id,
+        external_ids={"ArXiv": arxiv_id} if arxiv_id else {},
+        open_access_pdf_url=open_access_pdf_url,
         url=f"https://www.semanticscholar.org/paper/{paper_id}",
     )
+    if not with_pdf:
+        return paper
+    return paper.with_pdf_metadata(
+        pdf_url=f"https://arxiv.org/pdf/{arxiv_id or paper_id}",
+        pdf_source="arxiv",
+        pdf_path="tests/test_research_papers.py",
+        pdf_downloaded_at_utc="2026-05-30T00:00:02+00:00",
+        pdf_byte_size=1024,
+        pdf_sha256="abc123",
+    )
+
+
+class FakePdfDownloader:
+    def __init__(self, successful_paper_ids: set[str]) -> None:
+        self.successful_paper_ids = successful_paper_ids
+        self.attempted_paper_ids: list[str] = []
+
+    def download_for_paper(self, paper: Paper) -> Paper | None:
+        self.attempted_paper_ids.append(paper.paper_id)
+        if paper.paper_id not in self.successful_paper_ids:
+            return None
+        return paper.with_pdf_metadata(
+            pdf_url=f"https://arxiv.org/pdf/{paper.paper_id}",
+            pdf_source="arxiv",
+            pdf_path=f"games/research_papers/pdfs/{paper.paper_id}.pdf",
+            pdf_downloaded_at_utc="2026-05-30T00:00:03+00:00",
+            pdf_byte_size=2048,
+            pdf_sha256="def456",
+        )
 
 
 class FakeSemanticScholarClient:
@@ -35,9 +83,11 @@ class FakeSemanticScholarClient:
         self.batch_papers_response: list[Paper] = []
         self.search_papers_response: list[Paper] = []
         self.recommend_papers_response: list[Paper] = []
+        self.recommend_papers_by_limit: dict[int, list[Paper]] = {}
         self.batch_papers_by_id: dict[str, Paper] = {}
         self.recommend_positive_paper_ids: list[str] | None = None
         self.recommend_fields: str | None = None
+        self.recommend_limits: list[int] = []
 
     def batch_papers(self, paper_ids: list[str], *, fields: str) -> list[Paper]:
         if self.batch_papers_by_id:
@@ -61,6 +111,9 @@ class FakeSemanticScholarClient:
     ) -> list[Paper]:
         self.recommend_positive_paper_ids = positive_paper_ids
         self.recommend_fields = fields
+        self.recommend_limits.append(limit)
+        if self.recommend_papers_by_limit:
+            return self.recommend_papers_by_limit.get(limit, [])
         return self.recommend_papers_response
 
 
@@ -69,11 +122,14 @@ class ResearchPaperCorpusTests(unittest.TestCase):
         client = FakeSemanticScholarClient()
         seed = _paper("seed-paper", "Seed Paper", corpus_id=1)
         client.batch_papers_response = [seed]
+        pdf_downloader = FakePdfDownloader({"seed-paper"})
         grower = CorpusGrower(
             client=client,
+            pdf_downloader=pdf_downloader,
             paper_fields="title,tldr",
             recommendation_fields="title",
-            recommendation_limit=100,
+            recommendation_initial_limit=25,
+            recommendation_max_limit=200,
         )
         corpus = Corpus.empty(
             now_utc="2026-05-30T00:00:00+00:00",
@@ -81,25 +137,29 @@ class ResearchPaperCorpusTests(unittest.TestCase):
             seed_query="Seed Paper",
         )
 
-        updated, added, reason = grower.grow(corpus)
+        result = grower.grow(corpus)
 
-        self.assertEqual(reason, "seed")
-        self.assertEqual(added.paper_id, "seed-paper")
-        self.assertEqual(updated.paper_ids, ["seed-paper"])
-        self.assertEqual(updated.papers[0].rank, 1)
+        self.assertEqual(result.reason, "seed")
+        self.assertEqual(result.added_paper.paper_id, "seed-paper")
+        self.assertTrue(result.added_paper.has_pdf)
+        self.assertEqual(result.corpus.paper_ids, ["seed-paper"])
+        self.assertEqual(result.corpus.papers[0].rank, 1)
 
     def test_existing_corpus_grows_from_recommendations(self) -> None:
         client = FakeSemanticScholarClient()
-        seed = _paper("seed-paper", "Seed Paper", corpus_id=1)
+        seed = _paper("seed-paper", "Seed Paper", corpus_id=1, with_pdf=True)
         next_paper = _paper("next-paper", "Next Paper", corpus_id=2)
         client.recommend_papers_response = [seed, next_paper]
         detailed_next_paper = _paper("next-paper", "Detailed Next Paper", corpus_id=2)
         client.batch_papers_by_id = {"next-paper": detailed_next_paper}
+        pdf_downloader = FakePdfDownloader({"next-paper"})
         grower = CorpusGrower(
             client=client,
+            pdf_downloader=pdf_downloader,
             paper_fields="title,tldr",
             recommendation_fields="title",
-            recommendation_limit=100,
+            recommendation_initial_limit=25,
+            recommendation_max_limit=200,
         )
         corpus = Corpus.empty(
             now_utc="2026-05-30T00:00:00+00:00",
@@ -111,19 +171,104 @@ class ResearchPaperCorpusTests(unittest.TestCase):
             reason="seed",
         )
 
-        updated, added, reason = grower.grow(corpus)
+        result = grower.grow(corpus)
 
-        self.assertEqual(reason, "recommendation")
-        self.assertEqual(added.paper_id, "next-paper")
-        self.assertEqual(added.title, "Detailed Next Paper")
-        self.assertEqual(updated.paper_ids, ["seed-paper", "next-paper"])
-        self.assertEqual(updated.papers[1].rank, 2)
+        self.assertEqual(result.reason, "recommendation")
+        self.assertEqual(result.added_paper.paper_id, "next-paper")
+        self.assertEqual(result.added_paper.title, "Detailed Next Paper")
+        self.assertTrue(result.added_paper.has_pdf)
+        self.assertEqual(result.corpus.paper_ids, ["seed-paper", "next-paper"])
+        self.assertEqual(result.corpus.papers[1].rank, 2)
         self.assertEqual(client.recommend_positive_paper_ids, ["seed-paper"])
         self.assertEqual(client.recommend_fields, "title")
         self.assertEqual(
-            updated.papers[1].recommendation_source_paper_ids,
+            result.corpus.papers[1].recommendation_source_paper_ids,
             ["seed-paper"],
         )
+
+    def test_widens_recommendation_limits_until_downloadable_paper_succeeds(self) -> None:
+        client = FakeSemanticScholarClient()
+        seed = _paper("seed-paper", "Seed Paper", corpus_id=1, with_pdf=True)
+        failed = _paper("failed-paper", "Failed Paper", corpus_id=2)
+        success = _paper("success-paper", "Success Paper", corpus_id=3)
+        client.recommend_papers_by_limit = {
+            25: [failed],
+            50: [failed],
+            100: [failed, success],
+        }
+        client.batch_papers_by_id = {
+            "failed-paper": failed,
+            "success-paper": success,
+        }
+        pdf_downloader = FakePdfDownloader({"success-paper"})
+        grower = CorpusGrower(
+            client=client,
+            pdf_downloader=pdf_downloader,
+            paper_fields="title,tldr",
+            recommendation_fields="title",
+            recommendation_initial_limit=25,
+            recommendation_max_limit=200,
+        )
+        corpus = Corpus.empty(
+            now_utc="2026-05-30T00:00:00+00:00",
+            seed_paper_id="seed-paper",
+            seed_query="Seed Paper",
+        ).with_added_paper(
+            seed,
+            now_utc="2026-05-30T00:00:01+00:00",
+            reason="seed",
+        )
+
+        result = grower.grow(corpus)
+
+        self.assertEqual(client.recommend_limits, [25, 50, 100])
+        self.assertEqual(result.added_paper.paper_id, "success-paper")
+        self.assertEqual(result.recommendation_limit_used, 100)
+        self.assertEqual(
+            pdf_downloader.attempted_paper_ids,
+            ["failed-paper", "success-paper"],
+        )
+
+    def test_backfills_and_prunes_existing_corpus_before_growth(self) -> None:
+        client = FakeSemanticScholarClient()
+        missing_pdf = _paper("missing-pdf", "Missing PDF", corpus_id=1)
+        pruned = _paper("pruned-paper", "Pruned Paper", corpus_id=2)
+        next_paper = _paper("next-paper", "Next Paper", corpus_id=3)
+        client.recommend_papers_response = [next_paper]
+        client.batch_papers_by_id = {
+            "missing-pdf": missing_pdf,
+            "pruned-paper": pruned,
+            "next-paper": next_paper,
+        }
+        pdf_downloader = FakePdfDownloader({"missing-pdf", "next-paper"})
+        grower = CorpusGrower(
+            client=client,
+            pdf_downloader=pdf_downloader,
+            paper_fields="title,tldr",
+            recommendation_fields="title",
+            recommendation_initial_limit=25,
+            recommendation_max_limit=25,
+        )
+        corpus = Corpus.empty(
+            now_utc="2026-05-30T00:00:00+00:00",
+            seed_paper_id="seed-paper",
+            seed_query="Seed Paper",
+        ).with_added_paper(
+            missing_pdf,
+            now_utc="2026-05-30T00:00:01+00:00",
+            reason="seed",
+        ).with_added_paper(
+            pruned,
+            now_utc="2026-05-30T00:00:02+00:00",
+            reason="semantic_scholar_recommendation",
+        )
+
+        result = grower.grow(corpus)
+
+        self.assertEqual(result.backfilled_pdf_count, 1)
+        self.assertEqual(result.pruned_paper_count, 1)
+        self.assertEqual(result.corpus.paper_ids, ["missing-pdf", "next-paper"])
+        self.assertTrue(all(row.paper.has_pdf for row in result.corpus.papers))
 
     def test_first_untracked_paper_skips_existing_ids_and_corpus_ids(self) -> None:
         seed = _paper("seed-paper", "Seed Paper", corpus_id=1)
@@ -185,6 +330,157 @@ class ResearchPaperCorpusTests(unittest.TestCase):
         self.assertEqual(settings.seed_paper_id, DEFAULT_SEED_PAPER_ID)
         self.assertNotIn("tldr", settings.recommendation_fields.split(","))
         self.assertEqual(settings.recommendation_fields, RECOMMENDATION_FIELDS)
+        self.assertEqual(settings.pdf_dir, "games/research_papers/pdfs")
+        self.assertEqual(settings.raw_text_dir, "games/research_papers/raw_text")
+        self.assertTrue(settings.require_pdf)
+        self.assertTrue(settings.prefer_arxiv)
+        self.assertEqual(settings.recommendation_initial_limit, 25)
+        self.assertEqual(settings.recommendation_max_limit, 200)
+
+
+class ResearchPaperPdfTests(unittest.TestCase):
+    def test_arxiv_pdf_url_derives_from_external_ids(self) -> None:
+        paper = _paper("paper-id", "Paper", arxiv_id="ArXiv:2605.27295")
+
+        self.assertEqual(arxiv_pdf_url(paper), "https://arxiv.org/pdf/2605.27295")
+
+    def test_pdf_candidates_prefer_arxiv_then_open_access(self) -> None:
+        paper = _paper(
+            "paper-id",
+            "Paper",
+            arxiv_id="2605.27295",
+            open_access_pdf_url="https://example.test/paper.pdf",
+        )
+
+        candidates = pdf_candidates_for_paper(paper, prefer_arxiv=True)
+
+        self.assertEqual(
+            candidates,
+            [
+                PdfCandidate("https://arxiv.org/pdf/2605.27295", "arxiv"),
+                PdfCandidate(
+                    "https://example.test/paper.pdf",
+                    "semantic_scholar_open_access",
+                ),
+            ],
+        )
+
+    def test_sanitizes_and_trims_title_filenames(self) -> None:
+        title = 'A/B:C*D?E "F" <G> | H ' + ("long " * 40)
+
+        filename = sanitize_filename(title, max_length=40)
+
+        self.assertLessEqual(len(filename), 40)
+        self.assertNotRegex(filename, r'[<>:"/\\|?*]')
+        self.assertTrue(filename.startswith("A B C D E"))
+
+    def test_unique_pdf_path_adds_suffix_on_collision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pdf_dir = Path(tmpdir)
+            first = unique_pdf_path(pdf_dir, "Paper Title")
+            first.write_bytes(b"%PDF-1.7")
+            second = unique_pdf_path(pdf_dir, "Paper Title")
+
+        self.assertEqual(first.name, "Paper Title.pdf")
+        self.assertEqual(second.name, "Paper Title-2.pdf")
+
+    def test_pdf_validation_accepts_pdf_bytes_and_rejects_html(self) -> None:
+        self.assertTrue(is_pdf_response(b"%PDF-1.7\ncontent", "application/pdf"))
+        self.assertFalse(is_pdf_response(b"<html>not a pdf</html>", "text/html"))
+
+    def test_recommendation_limits_widen_gradually(self) -> None:
+        self.assertEqual(recommendation_limits(25, 200), [25, 50, 100, 200])
+        self.assertEqual(recommendation_limits(40, 100), [40, 80, 100])
+
+
+class ResearchPaperRawTextTests(unittest.TestCase):
+    def test_raw_text_path_uses_same_pdf_stem_with_txt_extension(self) -> None:
+        path = raw_text_path_for_pdf(
+            Path("games/research_papers/pdfs/Example Paper.pdf"),
+            Path("games/research_papers/raw_text"),
+        )
+
+        self.assertEqual(
+            path,
+            Path("games/research_papers/raw_text/Example Paper.txt"),
+        )
+
+    def test_extract_for_corpus_writes_raw_text_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            pdf_dir = tmp_path / "pdfs"
+            pdf_dir.mkdir()
+            pdf_path = pdf_dir / "Example Paper.pdf"
+            pdf_path.write_bytes(b"%PDF-1.7")
+            raw_text_dir = tmp_path / "raw_text"
+            paper = _paper("paper-id", "Example Paper", corpus_id=1).with_pdf_metadata(
+                pdf_url="https://arxiv.org/pdf/1234.5678",
+                pdf_source="arxiv",
+                pdf_path=str(pdf_path),
+                pdf_downloaded_at_utc="2026-05-30T00:00:00+00:00",
+                pdf_byte_size=10,
+                pdf_sha256="abc123",
+            )
+            corpus = Corpus.empty(
+                now_utc="2026-05-30T00:00:00+00:00",
+                seed_paper_id="paper-id",
+                seed_query="Example Paper",
+            ).with_added_paper(
+                paper,
+                now_utc="2026-05-30T00:00:01+00:00",
+                reason="seed",
+            )
+            extractor = RawTextExtractor(
+                str(raw_text_dir),
+                extract_text_func=lambda _path: "extracted text",
+            )
+
+            summary = extractor.extract_for_corpus(corpus)
+
+            self.assertEqual(summary.extracted_count, 1)
+            self.assertEqual(summary.skipped_count, 0)
+            self.assertEqual(
+                (raw_text_dir / "Example Paper.txt").read_text(encoding="utf-8"),
+                "extracted text\n",
+            )
+
+    def test_extract_for_corpus_skips_current_raw_text_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            pdf_path = tmp_path / "Example Paper.pdf"
+            text_path = tmp_path / "Example Paper.txt"
+            pdf_path.write_bytes(b"%PDF-1.7")
+            text_path.write_text("already extracted\n", encoding="utf-8")
+            paper = _paper("paper-id", "Example Paper", corpus_id=1).with_pdf_metadata(
+                pdf_url="https://arxiv.org/pdf/1234.5678",
+                pdf_source="arxiv",
+                pdf_path=str(pdf_path),
+                pdf_downloaded_at_utc="2026-05-30T00:00:00+00:00",
+                pdf_byte_size=10,
+                pdf_sha256="abc123",
+            )
+            corpus = Corpus.empty(
+                now_utc="2026-05-30T00:00:00+00:00",
+                seed_paper_id="paper-id",
+                seed_query="Example Paper",
+            ).with_added_paper(
+                paper,
+                now_utc="2026-05-30T00:00:01+00:00",
+                reason="seed",
+            )
+            extractor = RawTextExtractor(
+                str(tmp_path),
+                extract_text_func=lambda _path: "new text",
+            )
+
+            summary = extractor.extract_for_corpus(corpus)
+
+            self.assertEqual(summary.extracted_count, 0)
+            self.assertEqual(summary.skipped_count, 1)
+            self.assertEqual(
+                text_path.read_text(encoding="utf-8"),
+                "already extracted\n",
+            )
 
 
 if __name__ == "__main__":

@@ -130,27 +130,41 @@ games/verbal_zetamac/logs/scores.jsonl
 
 ## Research Papers
 
-This tool grows a local Semantic Scholar corpus one paper at a time. On the
-first run, it seeds the corpus with the configured paper. On later runs, it
-sends all existing paper IDs as positive examples to the Semantic Scholar
-recommendations API and adds the highest-ranked recommendation that is not
-already in the corpus.
+This tool grows a local Semantic Scholar corpus one paper at a time. Every
+active corpus row has a locally downloaded PDF. On the first run, it seeds the
+corpus with the configured paper. On later runs, it sends all existing paper IDs
+as positive examples to the Semantic Scholar recommendations API and adds the
+highest-ranked recommendation that is not already in the corpus and has a
+downloadable PDF.
 
 Useful research-paper settings in `.env`:
 
 ```env
 SEMANTIC_SCHOLAR_API_KEY=
 RESEARCH_PAPERS_CORPUS_PATH=games/research_papers/data/corpus.json
+RESEARCH_PAPERS_PDF_DIR=games/research_papers/pdfs
+RESEARCH_PAPERS_RAW_TEXT_DIR=games/research_papers/raw_text
 RESEARCH_PAPERS_SEED_PAPER_ID=ArXiv:2605.27295
 RESEARCH_PAPERS_SEED_QUERY=Gemini Embedding 2: A Native Multimodal Embedding Model from Gemini
-RESEARCH_PAPERS_RECOMMENDATION_LIMIT=100
+RESEARCH_PAPERS_REQUIRE_PDF=true
+RESEARCH_PAPERS_PREFER_ARXIV=true
+RESEARCH_PAPERS_RECOMMENDATION_INITIAL_LIMIT=25
+RESEARCH_PAPERS_RECOMMENDATION_MAX_LIMIT=200
+RESEARCH_PAPERS_PDF_TIMEOUT_SECONDS=45
 ```
 
-The corpus is saved as pretty-printed JSON:
+The corpus is saved as pretty-printed JSON. PDFs and extracted raw text are
+saved as local runtime artifacts:
 
 ```text
 games/research_papers/data/corpus.json
+games/research_papers/pdfs/
+games/research_papers/raw_text/
 ```
+
+The recommendation search widens gradually from a small batch to preserve
+semantic similarity where possible: `25`, then `50`, then `100`, up to the
+configured maximum.
 
 ## Dice-Sum Game
 

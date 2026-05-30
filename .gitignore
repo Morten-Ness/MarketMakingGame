@@ -21,6 +21,8 @@ models/
 logs/
 games/*/logs/
 games/*/data/
+games/*/pdfs/
+games/*/raw_text/
 *.wav
 *.mp3
 *.m4a

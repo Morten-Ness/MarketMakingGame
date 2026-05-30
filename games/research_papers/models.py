@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -27,6 +27,23 @@ class Paper:
     publication_date: str | None = None
     authors: list[str] = field(default_factory=list)
     tldr: str | None = None
+    pdf_url: str | None = None
+    pdf_source: str | None = None
+    pdf_path: str | None = None
+    pdf_downloaded_at_utc: str | None = None
+    pdf_byte_size: int | None = None
+    pdf_sha256: str | None = None
+
+    @property
+    def has_pdf(self) -> bool:
+        return bool(
+            self.pdf_url
+            and self.pdf_source
+            and self.pdf_path
+            and self.pdf_downloaded_at_utc
+            and self.pdf_byte_size
+            and self.pdf_sha256
+        )
 
     @classmethod
     def from_api_payload(cls, payload: dict[str, Any]) -> "Paper | None":
@@ -92,6 +109,32 @@ class Paper:
             publication_date=_as_non_empty_string(row.get("publicationDate")),
             authors=_string_list(row.get("authors")),
             tldr=_as_non_empty_string(row.get("tldr")),
+            pdf_url=_as_non_empty_string(row.get("pdfUrl")),
+            pdf_source=_as_non_empty_string(row.get("pdfSource")),
+            pdf_path=_as_non_empty_string(row.get("pdfPath")),
+            pdf_downloaded_at_utc=_as_non_empty_string(row.get("pdfDownloadedAtUtc")),
+            pdf_byte_size=_as_int(row.get("pdfByteSize")),
+            pdf_sha256=_as_non_empty_string(row.get("pdfSha256")),
+        )
+
+    def with_pdf_metadata(
+        self,
+        *,
+        pdf_url: str,
+        pdf_source: str,
+        pdf_path: str,
+        pdf_downloaded_at_utc: str,
+        pdf_byte_size: int,
+        pdf_sha256: str,
+    ) -> "Paper":
+        return replace(
+            self,
+            pdf_url=pdf_url,
+            pdf_source=pdf_source,
+            pdf_path=pdf_path,
+            pdf_downloaded_at_utc=pdf_downloaded_at_utc,
+            pdf_byte_size=pdf_byte_size,
+            pdf_sha256=pdf_sha256,
         )
 
     def as_corpus_dict(self) -> dict[str, Any]:
@@ -114,6 +157,12 @@ class Paper:
             "publicationDate": self.publication_date,
             "authors": self.authors,
             "tldr": self.tldr,
+            "pdfUrl": self.pdf_url,
+            "pdfSource": self.pdf_source,
+            "pdfPath": self.pdf_path,
+            "pdfDownloadedAtUtc": self.pdf_downloaded_at_utc,
+            "pdfByteSize": self.pdf_byte_size,
+            "pdfSha256": self.pdf_sha256,
         }
 
 
@@ -151,6 +200,15 @@ class CorpusPaper:
             "recommendationSourcePaperIds": self.recommendation_source_paper_ids,
             **self.paper.as_corpus_dict(),
         }
+
+    def with_paper(self, paper: Paper, *, rank: int | None = None) -> "CorpusPaper":
+        return CorpusPaper(
+            rank=self.rank if rank is None else rank,
+            added_at_utc=self.added_at_utc,
+            added_reason=self.added_reason,
+            paper=paper,
+            recommendation_source_paper_ids=self.recommendation_source_paper_ids,
+        )
 
 
 @dataclass(frozen=True)
@@ -244,12 +302,24 @@ class Corpus:
             ],
         )
 
+    def with_papers(self, papers: list[CorpusPaper], *, now_utc: str) -> "Corpus":
+        return Corpus(
+            created_at_utc=self.created_at_utc,
+            updated_at_utc=now_utc,
+            seed_paper_id=self.seed_paper_id,
+            seed_query=self.seed_query,
+            papers=[
+                corpus_paper.with_paper(corpus_paper.paper, rank=index)
+                for index, corpus_paper in enumerate(papers, start=1)
+            ],
+        )
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "schemaVersion": SCHEMA_VERSION,
             "description": (
-                "Incrementally grown Semantic Scholar paper corpus. "
-                "Each run adds the highest-ranked recommendation not already present."
+                "Incrementally grown Semantic Scholar paper corpus. Each active "
+                "row has a locally downloaded PDF."
             ),
             "createdAtUtc": self.created_at_utc,
             "updatedAtUtc": self.updated_at_utc,
@@ -300,4 +370,3 @@ def _authors_from_payload(value: Any) -> list[str]:
             if name:
                 authors.append(name)
     return authors
-
