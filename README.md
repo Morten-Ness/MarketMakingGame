@@ -22,6 +22,18 @@ Run the prediction-market odds game:
 ./.venv/bin/python games/prediction_market_odds/run.py
 ```
 
+Run the verbal arithmetic game:
+
+```bash
+./.venv/bin/python games/verbal_zetamac/run.py
+```
+
+Grow the research-paper corpus:
+
+```bash
+./.venv/bin/python games/research_papers/run.py
+```
+
 If dependencies are missing in a fresh environment, install them with:
 
 ```bash
@@ -29,6 +41,8 @@ pip install -r requirements.txt
 ```
 
 The apps read local settings from `.env`.
+
+Each game owns its own logs under that game's folder.
 
 ## Prediction-Market Odds Game
 
@@ -86,6 +100,57 @@ not to look up outside research or claim knowledge of the live odds.
 Set `PREDICTION_MARKET_AUTO_NEXT_GAME=true` to keep the process alive and start
 the next market automatically after showdown, reusing the already-loaded audio,
 voice, and bot clients.
+
+## Verbal Zetamac
+
+This is a spoken arithmetic speed drill. It pre-generates the question bank
+before the timer starts, prints and speaks each question, then listens for a
+verbal answer. No LLMs or bots are used.
+
+Useful verbal Zetamac settings in `.env`:
+
+```env
+VERBAL_ZETAMAC_DURATION_SECONDS=120
+VERBAL_ZETAMAC_QUESTION_COUNT=150
+VERBAL_ZETAMAC_OPERATIONS=addition,subtraction,multiplication,division
+VERBAL_ZETAMAC_ADDITION_MIN=2
+VERBAL_ZETAMAC_ADDITION_MAX=100
+VERBAL_ZETAMAC_MULTIPLIER_MIN=2
+VERBAL_ZETAMAC_MULTIPLIER_MAX=12
+VERBAL_ZETAMAC_MULTIPLICAND_MIN=2
+VERBAL_ZETAMAC_MULTIPLICAND_MAX=100
+TTS_PREROLL_MS=120
+```
+
+Scores are logged to:
+
+```text
+games/verbal_zetamac/logs/scores.jsonl
+```
+
+## Research Papers
+
+This tool grows a local Semantic Scholar corpus one paper at a time. On the
+first run, it seeds the corpus with the configured paper. On later runs, it
+sends all existing paper IDs as positive examples to the Semantic Scholar
+recommendations API and adds the highest-ranked recommendation that is not
+already in the corpus.
+
+Useful research-paper settings in `.env`:
+
+```env
+SEMANTIC_SCHOLAR_API_KEY=
+RESEARCH_PAPERS_CORPUS_PATH=games/research_papers/data/corpus.json
+RESEARCH_PAPERS_SEED_PAPER_ID=ArXiv:2605.27295
+RESEARCH_PAPERS_SEED_QUERY=Gemini Embedding 2: A Native Multimodal Embedding Model from Gemini
+RESEARCH_PAPERS_RECOMMENDATION_LIMIT=100
+```
+
+The corpus is saved as pretty-printed JSON:
+
+```text
+games/research_papers/data/corpus.json
+```
 
 ## Dice-Sum Game
 

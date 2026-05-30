@@ -11,6 +11,9 @@ from typing import Protocol
 from .paths import resolve_repo_path
 
 
+DEFAULT_TTS_PREROLL_MS = 120
+
+
 class SpeechProfile(Protocol):
     voice: str
 
@@ -18,6 +21,7 @@ class SpeechProfile(Protocol):
 class AudioSettings(Protocol):
     enable_tts: bool
     tts_backend: str
+    tts_preroll_ms: int
     macos_say_voice: str
     enable_voice_input: bool
     enable_audio_cues: bool
@@ -111,15 +115,23 @@ class ConsoleSpeaker:
 
 
 class KokoroSpeaker(ConsoleSpeaker):
-    def __init__(self, model_path: str, voices_path: str) -> None:
+    def __init__(
+        self,
+        model_path: str,
+        voices_path: str,
+        preroll_ms: int = DEFAULT_TTS_PREROLL_MS,
+    ) -> None:
         self._kokoro = None
         self._sounddevice = None
+        self._np = None
+        self._preroll_ms = max(0, preroll_ms)
         self._load_error: str | None = None
         model_path = _resolve_kokoro_model_path(model_path)
         voices_path = str(resolve_repo_path(voices_path))
 
         try:
             from kokoro_onnx import Kokoro
+            import numpy as np
             import sounddevice
         except ImportError as exc:
             self._load_error = str(exc)
@@ -133,6 +145,7 @@ class KokoroSpeaker(ConsoleSpeaker):
 
         try:
             self._kokoro = Kokoro(model_path, voices_path)
+            self._np = np
             self._sounddevice = sounddevice
         except Exception as exc:  # pragma: no cover - depends on local audio stack.
             self._load_error = str(exc)
@@ -171,15 +184,29 @@ class KokoroSpeaker(ConsoleSpeaker):
                 speed=1.0,
                 lang="en-us",
             )
+            samples = self._prepend_silence(samples, sample_rate)
             self._sounddevice.play(samples, sample_rate)
             self._sounddevice.wait()
         except Exception as exc:  # pragma: no cover - depends on local audio stack.
             print(f"[tts failed] {exc}")
 
+    def _prepend_silence(self, samples, sample_rate: int):
+        if self._preroll_ms <= 0 or self._np is None:
+            return samples
+
+        sample_count = int(sample_rate * self._preroll_ms / 1000)
+        if sample_count <= 0:
+            return samples
+
+        silence_shape = (sample_count, *samples.shape[1:])
+        silence = self._np.zeros(silence_shape, dtype=samples.dtype)
+        return self._np.concatenate((silence, samples), axis=0)
+
 
 class MacOSSaySpeaker(ConsoleSpeaker):
-    def __init__(self, voice: str) -> None:
+    def __init__(self, voice: str, preroll_ms: int = DEFAULT_TTS_PREROLL_MS) -> None:
         self._voice = voice.strip()
+        self._preroll_ms = max(0, preroll_ms)
 
     @property
     def status(self) -> str:
@@ -198,10 +225,16 @@ class MacOSSaySpeaker(ConsoleSpeaker):
             command = ["say"]
             if self._voice:
                 command.extend(["-v", self._voice])
-            command.append(prepare_tts_text(text))
+            command.append(self._prepare_say_text(text))
             subprocess.run(command, check=False)
         except Exception as exc:  # pragma: no cover - depends on local OS audio stack.
             print(f"[tts failed] {exc}")
+
+    def _prepare_say_text(self, text: str) -> str:
+        spoken_text = prepare_tts_text(text)
+        if self._preroll_ms <= 0:
+            return spoken_text
+        return f"[[slnc {self._preroll_ms}]] {spoken_text}"
 
 
 class ConsoleListener:
@@ -325,14 +358,22 @@ def build_speaker(settings: AudioSettings) -> ConsoleSpeaker:
         return ConsoleSpeaker()
 
     backend = settings.tts_backend.strip().lower()
+    preroll_ms = max(
+        0,
+        int(getattr(settings, "tts_preroll_ms", DEFAULT_TTS_PREROLL_MS)),
+    )
     if backend in {"auto", "kokoro"}:
-        kokoro = KokoroSpeaker(settings.kokoro_model_path, settings.kokoro_voices_path)
+        kokoro = KokoroSpeaker(
+            settings.kokoro_model_path,
+            settings.kokoro_voices_path,
+            preroll_ms=preroll_ms,
+        )
         if kokoro.is_available or backend == "kokoro":
             return kokoro
 
     if backend in {"auto", "macos", "say"}:
         if platform.system() == "Darwin" and shutil.which("say"):
-            return MacOSSaySpeaker(settings.macos_say_voice)
+            return MacOSSaySpeaker(settings.macos_say_voice, preroll_ms=preroll_ms)
 
     return ConsoleSpeaker()
 

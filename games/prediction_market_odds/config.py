@@ -21,6 +21,7 @@ class Settings:
     use_gemini: bool
     enable_tts: bool
     tts_backend: str
+    tts_preroll_ms: int
     macos_say_voice: str
     enable_voice_input: bool
     enable_audio_cues: bool
@@ -59,6 +60,7 @@ class Settings:
             use_gemini=env_bool("USE_GEMINI", True),
             enable_tts=env_bool("ENABLE_TTS", False),
             tts_backend=os.getenv("TTS_BACKEND", "auto"),
+            tts_preroll_ms=env_int("TTS_PREROLL_MS", 120),
             macos_say_voice=os.getenv("MACOS_SAY_VOICE", "Samantha"),
             enable_voice_input=env_bool("ENABLE_VOICE_INPUT", False),
             enable_audio_cues=env_bool("ENABLE_AUDIO_CUES", True),
