@@ -23,6 +23,10 @@ games/*/logs/
 games/*/data/
 games/*/pdfs/
 games/*/raw_text/
+games/research_papers/directions/*/corpus.json
+games/research_papers/directions/*/logs/
+games/research_papers/directions/*/pdfs/
+games/research_papers/directions/*/raw_text/
 *.wav
 *.mp3
 *.m4a

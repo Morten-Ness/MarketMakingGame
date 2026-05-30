@@ -5,9 +5,8 @@ from dataclasses import dataclass
 
 from shared.config import env_bool, env_int, load_repo_env
 
+from .directions import DEFAULT_RESEARCH_SUBJECT, DIRECTIONS_ROOT, ResearchDirection
 
-DEFAULT_SEED_QUERY = "Gemini Embedding 2: A Native Multimodal Embedding Model from Gemini"
-DEFAULT_SEED_PAPER_ID = "ArXiv:2605.27295"
 
 PAPER_FIELDS = ",".join(
     (
@@ -39,6 +38,7 @@ RECOMMENDATION_FIELDS = ",".join(
 
 @dataclass(frozen=True)
 class Settings:
+    research_subject: str
     api_base_url: str
     api_key: str | None
     corpus_path: str
@@ -61,26 +61,27 @@ class Settings:
     recommendation_fields: str
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(
+        cls,
+        research_subject: str = DEFAULT_RESEARCH_SUBJECT,
+        *,
+        directions_root: str = DIRECTIONS_ROOT,
+    ) -> "Settings":
         load_repo_env()
+        direction = ResearchDirection.load(
+            research_subject,
+            directions_root=directions_root,
+        )
         return cls(
+            research_subject=direction.subject,
             api_base_url=os.getenv(
                 "SEMANTIC_SCHOLAR_API_BASE_URL",
                 "https://api.semanticscholar.org",
             ).rstrip("/"),
             api_key=os.getenv("SEMANTIC_SCHOLAR_API_KEY", "").strip() or None,
-            corpus_path=os.getenv(
-                "RESEARCH_PAPERS_CORPUS_PATH",
-                "games/research_papers/data/corpus.json",
-            ),
-            seed_paper_id=os.getenv(
-                "RESEARCH_PAPERS_SEED_PAPER_ID",
-                DEFAULT_SEED_PAPER_ID,
-            ).strip(),
-            seed_query=os.getenv(
-                "RESEARCH_PAPERS_SEED_QUERY",
-                DEFAULT_SEED_QUERY,
-            ).strip(),
+            corpus_path=direction.corpus_path,
+            seed_paper_id=direction.seed_paper_id,
+            seed_query=direction.seed_query,
             recommendation_initial_limit=env_int(
                 "RESEARCH_PAPERS_RECOMMENDATION_INITIAL_LIMIT",
                 25,
@@ -91,14 +92,8 @@ class Settings:
             ),
             require_pdf=env_bool("RESEARCH_PAPERS_REQUIRE_PDF", True),
             prefer_arxiv=env_bool("RESEARCH_PAPERS_PREFER_ARXIV", True),
-            pdf_dir=os.getenv(
-                "RESEARCH_PAPERS_PDF_DIR",
-                "games/research_papers/pdfs",
-            ),
-            raw_text_dir=os.getenv(
-                "RESEARCH_PAPERS_RAW_TEXT_DIR",
-                "games/research_papers/raw_text",
-            ),
+            pdf_dir=direction.pdf_dir,
+            raw_text_dir=direction.raw_text_dir,
             pdf_timeout_seconds=env_int("RESEARCH_PAPERS_PDF_TIMEOUT_SECONDS", 45),
             enable_prediction_game=env_bool(
                 "RESEARCH_PAPERS_ENABLE_PREDICTION_GAME",
@@ -106,10 +101,7 @@ class Settings:
             ),
             openai_api_key=os.getenv("OPENAI_API_KEY", "").strip() or None,
             strong_model=os.getenv("RESEARCH_PAPERS_STRONG_MODEL", "gpt-5").strip(),
-            game_log_path=os.getenv(
-                "RESEARCH_PAPERS_GAME_LOG_PATH",
-                "games/research_papers/logs/prediction_games.jsonl",
-            ),
+            game_log_path=direction.game_log_path,
             game_max_text_chars=env_int("RESEARCH_PAPERS_GAME_MAX_TEXT_CHARS", 160_000),
             prompt_path=os.getenv(
                 "RESEARCH_PAPERS_PREDICTION_PROMPT_PATH",

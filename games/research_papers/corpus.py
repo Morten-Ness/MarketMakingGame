@@ -219,7 +219,7 @@ class CorpusGrower:
         if not search_results:
             raise CorpusGrowthError(
                 "Could not find the seed paper through Semantic Scholar. "
-                "Set RESEARCH_PAPERS_SEED_PAPER_ID or RESEARCH_PAPERS_SEED_QUERY."
+                "Check the active direction's direction.json seedPaperId and seedQuery."
             )
         return max(
             search_results,

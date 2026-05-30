@@ -9,7 +9,6 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from games.research_papers.config import (
-    DEFAULT_SEED_PAPER_ID,
     RECOMMENDATION_FIELDS,
     Settings,
 )
@@ -19,6 +18,7 @@ from games.research_papers.corpus import (
     first_untracked_paper,
     recommendation_limits,
 )
+from games.research_papers.directions import ResearchDirectionError
 from games.research_papers.models import Corpus, Paper
 from games.research_papers.pdfs import (
     PdfCandidate,
@@ -155,6 +155,29 @@ class FakeSemanticScholarClient:
         return self.recommend_papers_response
 
 
+def _write_direction_config(
+    root: Path,
+    subject: str,
+    *,
+    seed_paper_id: str = "ArXiv:1234.56789",
+    seed_query: str = "Seed Paper",
+) -> None:
+    direction_dir = root / subject
+    direction_dir.mkdir(parents=True)
+    (direction_dir / "direction.json").write_text(
+        json.dumps(
+            {
+                "name": subject,
+                "seedPaperId": seed_paper_id,
+                "seedQuery": seed_query,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 class ResearchPaperCorpusTests(unittest.TestCase):
     def test_empty_corpus_grows_from_seed_paper_id(self) -> None:
         client = FakeSemanticScholarClient()
@@ -171,7 +194,7 @@ class ResearchPaperCorpusTests(unittest.TestCase):
         )
         corpus = Corpus.empty(
             now_utc="2026-05-30T00:00:00+00:00",
-            seed_paper_id=DEFAULT_SEED_PAPER_ID,
+            seed_paper_id="ArXiv:2605.27295",
             seed_query="Seed Paper",
         )
 
@@ -354,22 +377,29 @@ class ResearchPaperCorpusTests(unittest.TestCase):
         self.assertEqual(payload["paperCount"], 1)
         self.assertEqual(payload["papers"][0]["title"], "Seed Paper")
 
-    def test_config_default_corpus_path_is_game_local(self) -> None:
+    def test_config_default_paths_are_direction_local(self) -> None:
         with (
             patch("games.research_papers.config.load_repo_env", return_value=False),
             patch.dict(os.environ, {}, clear=True),
         ):
             settings = Settings.from_env()
 
+        self.assertEqual(settings.research_subject, "embeddings")
         self.assertEqual(
             settings.corpus_path,
-            "games/research_papers/data/corpus.json",
+            "games/research_papers/directions/embeddings/corpus.json",
         )
-        self.assertEqual(settings.seed_paper_id, DEFAULT_SEED_PAPER_ID)
+        self.assertEqual(settings.seed_paper_id, "ArXiv:2605.27295")
         self.assertNotIn("tldr", settings.recommendation_fields.split(","))
         self.assertEqual(settings.recommendation_fields, RECOMMENDATION_FIELDS)
-        self.assertEqual(settings.pdf_dir, "games/research_papers/pdfs")
-        self.assertEqual(settings.raw_text_dir, "games/research_papers/raw_text")
+        self.assertEqual(
+            settings.pdf_dir,
+            "games/research_papers/directions/embeddings/pdfs",
+        )
+        self.assertEqual(
+            settings.raw_text_dir,
+            "games/research_papers/directions/embeddings/raw_text",
+        )
         self.assertTrue(settings.require_pdf)
         self.assertTrue(settings.prefer_arxiv)
         self.assertEqual(settings.recommendation_initial_limit, 25)
@@ -378,9 +408,90 @@ class ResearchPaperCorpusTests(unittest.TestCase):
         self.assertEqual(settings.strong_model, "gpt-5")
         self.assertEqual(
             settings.game_log_path,
-            "games/research_papers/logs/prediction_games.jsonl",
+            "games/research_papers/directions/embeddings/logs/prediction_games.jsonl",
         )
         self.assertEqual(settings.game_max_text_chars, 160_000)
+
+    def test_config_loads_seed_and_paths_from_custom_direction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directions_root = Path(tmpdir)
+            _write_direction_config(
+                directions_root,
+                "finance",
+                seed_paper_id="ArXiv:2501.00001",
+                seed_query="Market Microstructure Paper",
+            )
+
+            with (
+                patch("games.research_papers.config.load_repo_env", return_value=False),
+                patch.dict(os.environ, {}, clear=True),
+            ):
+                settings = Settings.from_env(
+                    research_subject="finance",
+                    directions_root=str(directions_root),
+                )
+
+            direction_root = directions_root / "finance"
+            self.assertEqual(settings.research_subject, "finance")
+            self.assertEqual(settings.seed_paper_id, "ArXiv:2501.00001")
+            self.assertEqual(settings.seed_query, "Market Microstructure Paper")
+            self.assertEqual(settings.corpus_path, str(direction_root / "corpus.json"))
+            self.assertEqual(settings.pdf_dir, str(direction_root / "pdfs"))
+            self.assertEqual(settings.raw_text_dir, str(direction_root / "raw_text"))
+            self.assertEqual(
+                settings.game_log_path,
+                str(direction_root / "logs" / "prediction_games.jsonl"),
+            )
+
+    def test_invalid_research_subject_fails_clearly(self) -> None:
+        with (
+            patch("games.research_papers.config.load_repo_env", return_value=False),
+            patch.dict(os.environ, {}, clear=True),
+            self.assertRaisesRegex(ResearchDirectionError, "lowercase letters"),
+        ):
+            Settings.from_env(research_subject="../finance")
+
+    def test_missing_research_direction_fails_clearly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch("games.research_papers.config.load_repo_env", return_value=False),
+                patch.dict(os.environ, {}, clear=True),
+                self.assertRaisesRegex(ResearchDirectionError, "does not exist"),
+            ):
+                Settings.from_env(
+                    research_subject="finance",
+                    directions_root=tmpdir,
+                )
+
+    def test_global_env_runtime_overrides_still_apply(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directions_root = Path(tmpdir)
+            _write_direction_config(directions_root, "finance")
+
+            with (
+                patch("games.research_papers.config.load_repo_env", return_value=False),
+                patch.dict(
+                    os.environ,
+                    {
+                        "SEMANTIC_SCHOLAR_API_BASE_URL": "https://example.test/api/",
+                        "SEMANTIC_SCHOLAR_API_KEY": "s2-key",
+                        "RESEARCH_PAPERS_ENABLE_PREDICTION_GAME": "false",
+                        "RESEARCH_PAPERS_STRONG_MODEL": "gpt-5-test",
+                        "RESEARCH_PAPERS_GAME_MAX_TEXT_CHARS": "12345",
+                    },
+                    clear=True,
+                ),
+            ):
+                settings = Settings.from_env(
+                    research_subject="finance",
+                    directions_root=str(directions_root),
+                )
+
+        self.assertEqual(settings.api_base_url, "https://example.test/api")
+        self.assertEqual(settings.api_key, "s2-key")
+        self.assertFalse(settings.enable_prediction_game)
+        self.assertEqual(settings.strong_model, "gpt-5-test")
+        self.assertEqual(settings.game_max_text_chars, 12_345)
 
 
 class ResearchPaperPdfTests(unittest.TestCase):

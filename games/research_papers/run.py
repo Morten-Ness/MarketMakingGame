@@ -11,5 +11,8 @@ if str(REPO_ROOT) not in sys.path:
 from games.research_papers.cli import main
 
 
+RESEARCH_SUBJECT = "embeddings"
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(research_subject=RESEARCH_SUBJECT))

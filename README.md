@@ -130,26 +130,40 @@ games/verbal_zetamac/logs/scores.jsonl
 
 ## Research Papers
 
-This tool grows a local Semantic Scholar corpus one paper at a time. Every
-active corpus row has a locally downloaded PDF. On the first run, it seeds the
-corpus with the configured paper. On later runs, it sends all existing paper IDs
-as positive examples to the Semantic Scholar recommendations API and adds the
-highest-ranked recommendation that is not already in the corpus and has a
-downloadable PDF.
+This tool grows a local Semantic Scholar corpus one paper at a time. Each
+research subject has its own direction folder, so recommendations only use
+papers from that subject. Every active corpus row has a locally downloaded PDF.
+On the first run for a subject, it seeds the corpus with that direction's
+configured paper. On later runs, it sends all existing paper IDs for that
+direction as positive examples to the Semantic Scholar recommendations API and
+adds the highest-ranked recommendation that is not already in the corpus and has
+a downloadable PDF.
 After the new paper is added, GPT-5 creates a non-spoiling prediction exercise
 from the paper text. Give a firm option answer, optionally with reasoning, and
 the game immediately reveals the result and whether your prediction was correct.
+
+The active subject is set near the top of `games/research_papers/run.py`:
+
+```python
+RESEARCH_SUBJECT = "embeddings"
+```
+
+To add another subject, create a new folder under
+`games/research_papers/directions/` with a `direction.json` file:
+
+```json
+{
+  "name": "finance",
+  "seedPaperId": "ArXiv:....",
+  "seedQuery": "Your seed paper title"
+}
+```
 
 Useful research-paper settings in `.env`:
 
 ```env
 SEMANTIC_SCHOLAR_API_KEY=
 OPENAI_API_KEY=
-RESEARCH_PAPERS_CORPUS_PATH=games/research_papers/data/corpus.json
-RESEARCH_PAPERS_PDF_DIR=games/research_papers/pdfs
-RESEARCH_PAPERS_RAW_TEXT_DIR=games/research_papers/raw_text
-RESEARCH_PAPERS_SEED_PAPER_ID=ArXiv:2605.27295
-RESEARCH_PAPERS_SEED_QUERY=Gemini Embedding 2: A Native Multimodal Embedding Model from Gemini
 RESEARCH_PAPERS_REQUIRE_PDF=true
 RESEARCH_PAPERS_PREFER_ARXIV=true
 RESEARCH_PAPERS_RECOMMENDATION_INITIAL_LIMIT=25
@@ -157,18 +171,17 @@ RESEARCH_PAPERS_RECOMMENDATION_MAX_LIMIT=200
 RESEARCH_PAPERS_PDF_TIMEOUT_SECONDS=45
 RESEARCH_PAPERS_ENABLE_PREDICTION_GAME=true
 RESEARCH_PAPERS_STRONG_MODEL=gpt-5
-RESEARCH_PAPERS_GAME_LOG_PATH=games/research_papers/logs/prediction_games.jsonl
 RESEARCH_PAPERS_GAME_MAX_TEXT_CHARS=160000
 ```
 
-The corpus is saved as pretty-printed JSON. PDFs and extracted raw text are
-saved as local runtime artifacts:
+The corpus is saved as pretty-printed JSON. PDFs, extracted raw text, and game
+logs are saved as local runtime artifacts inside the active direction:
 
 ```text
-games/research_papers/data/corpus.json
-games/research_papers/pdfs/
-games/research_papers/raw_text/
-games/research_papers/logs/prediction_games.jsonl
+games/research_papers/directions/embeddings/corpus.json
+games/research_papers/directions/embeddings/pdfs/
+games/research_papers/directions/embeddings/raw_text/
+games/research_papers/directions/embeddings/logs/prediction_games.jsonl
 ```
 
 The recommendation search widens gradually from a small batch to preserve

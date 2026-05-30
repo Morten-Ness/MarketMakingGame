@@ -4,6 +4,7 @@ from shared.llm import OpenAIResponsesClient
 
 from .config import Settings
 from .corpus import CorpusGrower, CorpusGrowthError, CorpusStore
+from .directions import DEFAULT_RESEARCH_SUBJECT, ResearchDirectionError
 from .pdfs import PdfDownloader
 from .prediction_game import (
     generate_prediction_exercise,
@@ -15,8 +16,13 @@ from .raw_text import RawTextExtractionError, RawTextExtractor
 from .semantic_scholar import SemanticScholarClient, SemanticScholarError
 
 
-def main() -> int:
-    settings = Settings.from_env()
+def main(research_subject: str = DEFAULT_RESEARCH_SUBJECT) -> int:
+    try:
+        settings = Settings.from_env(research_subject=research_subject)
+    except ResearchDirectionError as exc:
+        print(f"Research paper corpus error: {exc}")
+        return 2
+
     if settings.enable_prediction_game and not settings.openai_api_key:
         print(
             "Research paper corpus error: OPENAI_API_KEY is required when "
@@ -58,6 +64,7 @@ def main() -> int:
 
     added_paper = result.added_paper
     print("Research Paper Corpus")
+    print(f"Research subject: {settings.research_subject}")
     print(f"Corpus path: {store.path}")
     print(f"PDF dir: {pdf_downloader.pdf_dir}")
     print(f"Raw text dir: {raw_text_summary.raw_text_dir}")
