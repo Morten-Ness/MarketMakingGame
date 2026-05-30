@@ -1,14 +1,29 @@
 from __future__ import annotations
 
+from shared.llm import OpenAIResponsesClient
+
 from .config import Settings
 from .corpus import CorpusGrower, CorpusGrowthError, CorpusStore
 from .pdfs import PdfDownloader
+from .prediction_game import (
+    generate_prediction_exercise,
+    read_prompt,
+    read_raw_text_for_paper,
+    run_prediction_game,
+)
 from .raw_text import RawTextExtractionError, RawTextExtractor
 from .semantic_scholar import SemanticScholarClient, SemanticScholarError
 
 
 def main() -> int:
     settings = Settings.from_env()
+    if settings.enable_prediction_game and not settings.openai_api_key:
+        print(
+            "Research paper corpus error: OPENAI_API_KEY is required when "
+            "RESEARCH_PAPERS_ENABLE_PREDICTION_GAME=true."
+        )
+        return 2
+
     store = CorpusStore(settings.corpus_path)
     client = SemanticScholarClient(settings.api_base_url, settings.api_key)
     pdf_downloader = PdfDownloader(
@@ -73,4 +88,33 @@ def main() -> int:
         print(f"PDF source: {added_paper.pdf_source}")
     if added_paper.tldr:
         print(f"TLDR: {added_paper.tldr}")
+
+    if settings.enable_prediction_game:
+        try:
+            assert settings.openai_api_key is not None
+            llm_client = OpenAIResponsesClient(
+                api_key=settings.openai_api_key,
+                model=settings.strong_model,
+            )
+            print(llm_client.status)
+            prompt_text = read_prompt(settings.prompt_path)
+            raw_text = read_raw_text_for_paper(added_paper, settings.raw_text_dir)
+            exercise = generate_prediction_exercise(
+                llm_client=llm_client,
+                prompt_text=prompt_text,
+                paper=added_paper,
+                raw_text=raw_text,
+                max_text_chars=settings.game_max_text_chars,
+            )
+        except Exception as exc:
+            print(f"Research paper prediction game error: {exc}")
+            return 2
+
+        run_prediction_game(
+            exercise=exercise,
+            paper=added_paper,
+            model_name=settings.strong_model,
+            log_path=settings.game_log_path,
+            llm_client=llm_client,
+        )
     return 0

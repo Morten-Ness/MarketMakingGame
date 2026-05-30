@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from games.research_papers.config import (
@@ -26,6 +27,15 @@ from games.research_papers.pdfs import (
     pdf_candidates_for_paper,
     sanitize_filename,
     unique_pdf_path,
+)
+from games.research_papers.prediction_game import (
+    PredictionExercise,
+    is_prediction_correct,
+    parse_single_option_answer,
+    parse_user_option,
+    render_visible_exercise,
+    run_prediction_game,
+    truncate_text,
 )
 from games.research_papers.raw_text import RawTextExtractor, raw_text_path_for_pdf
 
@@ -76,6 +86,34 @@ class FakePdfDownloader:
             pdf_byte_size=2048,
             pdf_sha256="def456",
         )
+
+
+class FakeAnswerLlmClient:
+    def __init__(self, response: dict[str, object]) -> None:
+        self.response = response
+        self.calls: list[dict[str, object]] = []
+
+    @property
+    def status(self) -> str:
+        return "fake answer llm"
+
+    def generate_json(
+        self,
+        system_instruction: str,
+        payload: object,
+        schema: dict[str, object] | None = None,
+    ) -> object:
+        self.calls.append(
+            {
+                "system_instruction": system_instruction,
+                "payload": payload,
+                "schema": schema or {},
+            }
+        )
+        return self.response
+
+    def generate_text(self, system_instruction: str, payload: object) -> str:
+        raise NotImplementedError
 
 
 class FakeSemanticScholarClient:
@@ -336,6 +374,13 @@ class ResearchPaperCorpusTests(unittest.TestCase):
         self.assertTrue(settings.prefer_arxiv)
         self.assertEqual(settings.recommendation_initial_limit, 25)
         self.assertEqual(settings.recommendation_max_limit, 200)
+        self.assertTrue(settings.enable_prediction_game)
+        self.assertEqual(settings.strong_model, "gpt-5")
+        self.assertEqual(
+            settings.game_log_path,
+            "games/research_papers/logs/prediction_games.jsonl",
+        )
+        self.assertEqual(settings.game_max_text_chars, 160_000)
 
 
 class ResearchPaperPdfTests(unittest.TestCase):
@@ -481,6 +526,198 @@ class ResearchPaperRawTextTests(unittest.TestCase):
                 text_path.read_text(encoding="utf-8"),
                 "already extracted\n",
             )
+
+
+class ResearchPaperPredictionGameTests(unittest.TestCase):
+    def test_accepts_suitable_and_not_suitable_exercise_json(self) -> None:
+        suitable = PredictionExercise.from_payload(_exercise_payload())
+        not_suitable = PredictionExercise.from_payload(
+            {
+                "suitability": "Not suitable",
+                "neutral_setup": "",
+                "prediction_question": "",
+                "options": [],
+                "reasoning_prompt": "",
+                "reveal": {
+                    "correct_option": "",
+                    "result_summary": "",
+                    "correctness_explanation": "",
+                    "learning_note": "",
+                    "caveats": "",
+                },
+                "not_suitable_reason": "The paper is mainly a survey.",
+                "alternative_reading_exercise": "Make a concept map.",
+            }
+        )
+
+        self.assertTrue(suitable.is_suitable)
+        self.assertFalse(not_suitable.is_suitable)
+
+    def test_visible_rendering_does_not_include_reveal_content(self) -> None:
+        exercise = PredictionExercise.from_payload(_exercise_payload())
+
+        visible = render_visible_exercise(exercise)
+
+        self.assertIn("Prediction question:", visible)
+        self.assertNotIn("secret result", visible)
+        self.assertNotIn("Correct answer", visible)
+
+    def test_answer_parsing_and_correctness(self) -> None:
+        labels = {"A", "B", "C"}
+
+        self.assertEqual(parse_single_option_answer("A", labels), "A")
+        self.assertEqual(parse_single_option_answer("a.", labels), "A")
+        self.assertIsNone(parse_single_option_answer("I choose B because", labels))
+        self.assertEqual(parse_user_option("A", labels), "A")
+        self.assertEqual(parse_user_option("a.", labels), "A")
+        self.assertEqual(parse_user_option("I choose B because it seems plausible", labels), "B")
+        self.assertEqual(parse_user_option("My final prediction is A.", labels), "A")
+        self.assertIsNone(parse_user_option("I am torn between things", labels))
+        self.assertTrue(is_prediction_correct("B", "B"))
+        self.assertFalse(is_prediction_correct("A", "B"))
+
+    def test_long_answer_uses_llm_for_prediction_and_reasoning_feedback(self) -> None:
+        exercise = PredictionExercise.from_payload(_exercise_payload())
+        printed: list[str] = []
+        answer_llm = FakeAnswerLlmClient(
+            {
+                "parsed_option": "A",
+                "reasoning_summary": "The user thinks Method A should win.",
+                "reasoning_assessment": (
+                    "Your intuition about the setup was plausible, but the paper's "
+                    "main table favors Method B."
+                ),
+                "interpretation_notes": "Final prediction was explicit.",
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = str(Path(tmpdir) / "prediction_games.jsonl")
+            outcome = run_prediction_game(
+                exercise=exercise,
+                paper=_paper("paper-id", "Example Paper", corpus_id=1, with_pdf=True),
+                model_name="gpt-5",
+                log_path=log_path,
+                llm_client=answer_llm,
+                input_func=lambda _prompt: "I reason through it, so my final prediction is A.",
+                print_func=printed.append,
+            )
+            row = json.loads(Path(log_path).read_text(encoding="utf-8").strip())
+
+        self.assertEqual(len(answer_llm.calls), 1)
+        self.assertEqual(outcome.parsed_option, "A")
+        self.assertFalse(outcome.correct)
+        self.assertEqual(outcome.answer_parser, "llm")
+        self.assertIn("Your reasoning:", "\n".join(printed))
+        self.assertIn("main table favors Method B", "\n".join(printed))
+        self.assertEqual(row["reasoningSummary"], "The user thinks Method A should win.")
+        self.assertIn("main table favors Method B", row["reasoningAssessment"])
+
+    def test_single_letter_answer_skips_llm_interpretation(self) -> None:
+        exercise = PredictionExercise.from_payload(_exercise_payload())
+        printed: list[str] = []
+        answer_llm = FakeAnswerLlmClient(
+            {
+                "parsed_option": "A",
+                "reasoning_summary": "Should not be used.",
+                "reasoning_assessment": "Should not be printed.",
+                "interpretation_notes": "",
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            outcome = run_prediction_game(
+                exercise=exercise,
+                paper=_paper("paper-id", "Example Paper", corpus_id=1, with_pdf=True),
+                model_name="gpt-5",
+                log_path=str(Path(tmpdir) / "prediction_games.jsonl"),
+                llm_client=answer_llm,
+                input_func=lambda _prompt: "B",
+                print_func=printed.append,
+            )
+
+        self.assertEqual(answer_llm.calls, [])
+        self.assertEqual(outcome.parsed_option, "B")
+        self.assertTrue(outcome.correct)
+        self.assertNotIn("Should not be printed", "\n".join(printed))
+
+    def test_unclear_answer_asks_again_before_reveal_and_logs_result(self) -> None:
+        exercise = PredictionExercise.from_payload(_exercise_payload())
+        printed: list[str] = []
+        answers = iter(["not sure yet", "I choose B because of the setup"])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = str(Path(tmpdir) / "prediction_games.jsonl")
+            outcome = run_prediction_game(
+                exercise=exercise,
+                paper=_paper("paper-id", "Example Paper", corpus_id=1, with_pdf=True),
+                model_name="gpt-5",
+                log_path=log_path,
+                input_func=lambda _prompt: next(answers),
+                print_func=printed.append,
+            )
+            row = json.loads(Path(log_path).read_text(encoding="utf-8").strip())
+
+        self.assertTrue(outcome.revealed)
+        self.assertEqual(outcome.parsed_option, "B")
+        self.assertTrue(outcome.correct)
+        self.assertIn("Please answer with a clear option label", "\n".join(printed))
+        self.assertIn("secret result", "\n".join(printed))
+        self.assertTrue(row["revealed"])
+        self.assertEqual(row["reveal"]["correct_option"], "B")
+        self.assertEqual(row["correct"], True)
+
+    def test_truncate_text_preserves_front_and_back(self) -> None:
+        text = "front-" + ("middle" * 100) + "-back"
+
+        truncated = truncate_text(text, 80)
+
+        self.assertTrue(truncated.startswith("front-"))
+        self.assertTrue(truncated.endswith("-back"))
+        self.assertIn("middle of paper omitted", truncated)
+
+    def test_missing_openai_key_fails_before_corpus_growth(self) -> None:
+        from games.research_papers import cli
+
+        settings = SimpleNamespace(
+            enable_prediction_game=True,
+            openai_api_key=None,
+        )
+        printed: list[str] = []
+
+        with (
+            patch("games.research_papers.cli.Settings.from_env", return_value=settings),
+            patch("builtins.print", side_effect=printed.append),
+            patch("games.research_papers.cli.CorpusStore") as corpus_store,
+        ):
+            exit_code = cli.main()
+
+        self.assertEqual(exit_code, 2)
+        self.assertFalse(corpus_store.called)
+        self.assertIn("OPENAI_API_KEY", "\n".join(printed))
+
+
+def _exercise_payload() -> dict[str, object]:
+    return {
+        "suitability": "Suitable",
+        "neutral_setup": "Two methods are compared on the same benchmark.",
+        "prediction_question": "Which method has the better main result?",
+        "options": [
+            {"label": "A", "text": "Method A is better."},
+            {"label": "B", "text": "Method B is better."},
+            {"label": "C", "text": "They are similar."},
+        ],
+        "reasoning_prompt": "Give your firm prediction, optionally with reasoning.",
+        "reveal": {
+            "correct_option": "B",
+            "result_summary": "The secret result is that Method B is better.",
+            "correctness_explanation": "The main table favors Method B.",
+            "learning_note": "The benchmark rewards the relevant mechanism.",
+            "caveats": "The result is benchmark-specific.",
+        },
+        "not_suitable_reason": "",
+        "alternative_reading_exercise": "",
+    }
 
 
 if __name__ == "__main__":

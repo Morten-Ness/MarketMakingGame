@@ -51,6 +51,12 @@ class Settings:
     pdf_dir: str
     raw_text_dir: str
     pdf_timeout_seconds: int
+    enable_prediction_game: bool
+    openai_api_key: str | None
+    strong_model: str
+    game_log_path: str
+    game_max_text_chars: int
+    prompt_path: str
     paper_fields: str
     recommendation_fields: str
 
@@ -94,6 +100,21 @@ class Settings:
                 "games/research_papers/raw_text",
             ),
             pdf_timeout_seconds=env_int("RESEARCH_PAPERS_PDF_TIMEOUT_SECONDS", 45),
+            enable_prediction_game=env_bool(
+                "RESEARCH_PAPERS_ENABLE_PREDICTION_GAME",
+                True,
+            ),
+            openai_api_key=os.getenv("OPENAI_API_KEY", "").strip() or None,
+            strong_model=os.getenv("RESEARCH_PAPERS_STRONG_MODEL", "gpt-5").strip(),
+            game_log_path=os.getenv(
+                "RESEARCH_PAPERS_GAME_LOG_PATH",
+                "games/research_papers/logs/prediction_games.jsonl",
+            ),
+            game_max_text_chars=env_int("RESEARCH_PAPERS_GAME_MAX_TEXT_CHARS", 160_000),
+            prompt_path=os.getenv(
+                "RESEARCH_PAPERS_PREDICTION_PROMPT_PATH",
+                "games/research_papers/prompt.txt",
+            ),
             paper_fields=os.getenv("RESEARCH_PAPERS_PAPER_FIELDS", PAPER_FIELDS).strip(),
             recommendation_fields=os.getenv(
                 "RESEARCH_PAPERS_RECOMMENDATION_FIELDS",
