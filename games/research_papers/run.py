@@ -11,7 +11,8 @@ if str(REPO_ROOT) not in sys.path:
 from games.research_papers.cli import main
 
 
-RESEARCH_SUBJECT = "embeddings"
+RESEARCH_SUBJECT = "attention"
+# Options: "attention", "embeddings"
 
 
 if __name__ == "__main__":
