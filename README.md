@@ -145,11 +145,16 @@ the game immediately reveals the result and whether your prediction was correct.
 The active subject is set near the top of `games/research_papers/run.py`:
 
 ```python
-RESEARCH_SUBJECT = "embeddings"
+RESEARCH_SUBJECT = "attention"
 ```
 
-To add another subject, create a new folder under
-`games/research_papers/directions/` with a `direction.json` file:
+To add another subject:
+
+1. Create `games/research_papers/directions/<subject>/direction.json`.
+2. Set `"name"` to the same `<subject>` folder name.
+3. Set `seedPaperId` to a Semantic Scholar paper ID, arXiv ID, or other
+   supported paper ID.
+4. Set `RESEARCH_SUBJECT = "<subject>"` in `run.py`.
 
 ```json
 {
